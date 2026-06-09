@@ -5,7 +5,7 @@ import java.util.Map;
 import java.util.Map.Entry;
 
 import app.AppConfig;
-import app.ServentInfo;
+import core.ServentInfo;
 import servent.message.Message;
 import servent.message.MessageType;
 import servent.message.NewNodeMessage;

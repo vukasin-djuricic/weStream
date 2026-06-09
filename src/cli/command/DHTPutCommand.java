@@ -1,7 +1,7 @@
 package cli.command;
 
 import app.AppConfig;
-import app.ChordState;
+import core.chord.ChordState;
 
 public class DHTPutCommand implements CLICommand {
 

@@ -1,6 +1,8 @@
-package app;
+package core;
 
 import java.io.Serializable;
+
+import core.chord.ChordState;
 
 /**
  * This is an immutable class that holds all the information for a servent.

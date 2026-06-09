@@ -8,6 +8,9 @@ import java.text.SimpleDateFormat;
 import java.util.Date;
 import java.util.Properties;
 
+import core.ServentInfo;
+import core.chord.ChordState;
+
 /**
  * This class contains all the global application configuration stuff.
  * @author bmilojkovic

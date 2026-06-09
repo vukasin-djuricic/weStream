@@ -3,7 +3,7 @@ package servent.handler;
 import java.util.Map;
 
 import app.AppConfig;
-import app.ServentInfo;
+import core.ServentInfo;
 import servent.message.AskGetMessage;
 import servent.message.Message;
 import servent.message.MessageType;

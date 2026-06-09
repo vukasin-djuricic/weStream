@@ -3,7 +3,7 @@ package servent.message;
 import java.util.Objects;
 import java.util.concurrent.atomic.AtomicInteger;
 
-import app.ChordState;
+import core.chord.ChordState;
 
 /**
  * A default message implementation. This should cover most situations.

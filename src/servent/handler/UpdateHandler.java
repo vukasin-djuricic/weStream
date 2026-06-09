@@ -4,7 +4,7 @@ import java.util.ArrayList;
 import java.util.List;
 
 import app.AppConfig;
-import app.ServentInfo;
+import core.ServentInfo;
 import servent.message.Message;
 import servent.message.MessageType;
 import servent.message.UpdateMessage;

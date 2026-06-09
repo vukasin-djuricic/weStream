@@ -10,7 +10,7 @@ The active codebase (`KiDS-vezbe9/`) is a **Chord DHT** simulation framework —
 
 ## Build & run
 
-This is a plain **IntelliJ IDEA** project (`weStream.iml`), no Maven/Gradle. The repo is a **single root**: sources in `src/` (packages `app`, `cli`, `servent`), compiled classes in `out/production/weStream/`. (Historically the code lived in a nested `KiDS-vezbe9/` subfolder with its own IntelliJ project — that nesting has been flattened; if you see references to `KiDS-vezbe9` anywhere, they are stale.)
+This is a plain **IntelliJ IDEA** project (`weStream.iml`), no Maven/Gradle. The repo is a **single root**: sources in `src/` (packages `app` = process startup/bootstrap, `core` = node identity + routing state, `cli`, `servent` = transport/messaging), compiled classes in `out/production/weStream/`. (Historically the code lived in a nested `KiDS-vezbe9/` subfolder with its own IntelliJ project — that nesting has been flattened; if you see references to `KiDS-vezbe9` anywhere, they are stale.)
 
 Two entry points (both have `main`):
 - `app.MultipleServentStarter` — the normal way to run. Launches `app.BootstrapServer` then spawns `SERVENT_COUNT` `app.ServentMain` processes, redirecting each node's stdin/stdout/stderr to `chord/input/serventN_in.txt`, `chord/output/serventN_out.txt`, `chord/error/serventN_err.txt`. Type `stop` in its console to kill all processes. It spawns the child JVMs with classpath `out/production/weStream`, so **compile first** (IntelliJ build, or the `javac` line below).
@@ -59,7 +59,7 @@ A node's Chord ID is derived purely from its port: `chordHash(port) = 61 * port 
 
 The bootstrap (`BootstrapServer`) handles joins **sequentially** (single SPOF for bootstrapping only) and is not part of steady-state routing — the comments note a real system would use an always-on backbone instead.
 
-### Chord routing — `app.ChordState`
+### Chord routing — `core.chord.ChordState`
 The brain of the system. Holds:
 - `successorTable` — the finger table, length `log2(CHORD_SIZE)`. Entry `i` targets ID `(myId + 2^(i+1)) % CHORD_SIZE`, built by `updateSuccessorTable()` from the sorted `allNodeInfo` list.
 - `predecessorInfo`, `valueMap` (the local DHT key→value store).
