@@ -1,0 +1,21 @@
+# Compiled output
+out/
+*.class
+
+# IntelliJ IDEA (project files are regenerable; source is the source of truth)
+.idea/
+*.iml
+
+# macOS
+.DS_Store
+
+# Generated repo digest (gitingest dump)
+digest.txt
+
+# Runtime simulation logs (regenerated on every run).
+# The directories themselves are kept via .gitkeep because
+# MultipleServentStarter redirects each node's output/error into them.
+chord/output/*
+chord/error/*
+!chord/output/.gitkeep
+!chord/error/.gitkeep

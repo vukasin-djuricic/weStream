@@ -1,0 +1,108 @@
+\documentclass[11pt,a4paper]{article}
+
+% Paketi za formatiranje
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage{geometry}
+\geometry{margin=1in}
+\usepackage{hyperref}
+\usepackage{xcolor}
+\usepackage{listings}
+\usepackage{graphicx}
+\usepackage{enumitem}
+\usepackage{color}
+
+% Podesavanje boja za linkove i kod
+\definecolor{primary}{RGB}{41, 128, 185}
+\definecolor{codebg}{RGB}{245, 245, 245}
+
+\hypersetup{
+    colorlinks=true,
+    linkcolor=primary,
+    filecolor=magenta,      
+    urlcolor=primary,
+}
+
+\lstset{
+    backgroundcolor=\color{codebg},
+    basicstyle=\ttfamily\small,
+    breaklines=true,
+    frame=single,
+    rulecolor=\color{lightgray},
+    padding=5pt
+}
+
+\title{\textbf{weStream}\\ \Large A decentralized, serverless P2P live video streaming engine powered by a custom Kademlia DHT.}
+\author{Project Specification}
+\date{\today}
+
+\begin{document}
+
+\maketitle
+
+\section*{Overview}
+\texttt{weStream} is a serverless, peer-to-peer (P2P) multimedia distribution system. Unlike traditional streaming platforms that rely on expensive centralized cloud servers (which choke under high traffic), \texttt{weStream} is entirely community-powered. 
+
+The core philosophy is simple: \textbf{The more people watch a stream, the more stable, robust, and fast the stream becomes.}
+
+Historically built as an advanced architectural evolution of the university-level \textbf{Chord DHT} framework, this project replaces the fragile Chord ring topology with a fully-featured, highly-resilient \textbf{Kademlia DHT} utilizing the symmetric XOR metric.
+
+\section*{Key Features}
+\begin{itemize}
+    \item \textbf{Complete Kademlia DHT Implementation:} Nodes self-organize into a binary tree topology using a 160-bit ID space, $k$-buckets ($k=20$), and symmetric XOR metric routing.
+    \item \textbf{Dual-Mode Operation:} 
+    \begin{itemize}
+        \item \textit{Download Mode:} Uses a \textbf{Rarest-First} piece selection strategy to download and assemble complete files asynchronously.
+        \item \textit{Seamless Stream Mode:} Uses a custom \textbf{Sequential Sliding-Window} piece picker, allowing users to watch live or on-demand streams instantly without waiting for the full download.
+    \end{itemize}
+    \item \textbf{Decentralized Bootstrap Integration:} Uses a lightweight bootstrap protocol only for initial node introduction, preventing Single Point of Failure (SPOF).
+    \item \textbf{High Churn Resilience:} Outperforms Chord under high peer turnover due to Kademlia's least-recently-seen $k$-bucket replacement policy.
+    \item \textbf{Asynchronous Message Handling:} Multi-threaded message processing using non-blocking thread pools (\texttt{ExecutorService}) and strictly structured message handlers.
+\end{itemize}
+
+\section*{System Architecture \& Data Flow}
+To achieve seamless streaming without overloading the DHT with millions of individual chunk queries, \texttt{weStream} separates peer discovery from data transfer into three distinct phases:
+
+\begin{lstlisting}[language=bash]
+[ Phase 1: Discovery ]      [ Phase 2: Metadata Exchange ]     [ Phase 3: Streaming ]
+  Kademlia DHT Lookup                 Bitfield Gossip              Direct UDP Chunk Pull
+=======================      ==============================     ===========================
+New Node -> FIND_VALUE(hash)   Node A <--- BITFIELD_REQ ---> Node B  Node A <--- CHUNK_REQ ---> Node B
+  |                              |                                    |
+  v                              v                                    v
+Returns active Peer IPs      Exchange chunk availability maps    Sequential sliding-window
+\end{lstlisting}
+
+\begin{enumerate}
+    \item \textbf{Phase 1 (DHT Discovery):} The DHT is queried initially (and periodically). A \texttt{FIND\_VALUE} RPC resolves the stream's \texttt{InfoHash} into a list of active peer IP addresses.
+    \item \textbf{Phase 2 (Bitfield Gossip):} Connected peers directly exchange compact \texttt{bitfield} maps representing which sequential video chunks they currently hold.
+    \item \textbf{Phase 3 (Sequential Streaming):} The streaming engine prioritizes downloading the immediate next chunks (sliding window $[Current, Current + W]$) using direct, parallel socket transfers.
+\end{enumerate}
+
+\section*{Directory \& Package Structure}
+This codebase strictly follows the clean, modular, and extensible architecture:
+
+\begin{lstlisting}
+src/
+|-- app/
+|   |-- AppConfig.java            # Global configurations & constants
+|   |-- KademliaState.java        # Holds k-buckets, routing logic, and XOR metric
+|   |-- ServentMain.java          # Entry point for a single servent process
+|-- cli/
+|   |-- CLIParser.java            # Command-line interface parser
+|   |-- command/                  # DHTGet, DHTPut, StreamPlay wrappers
+|-- servent/
+|   |-- SimpleServentListener.java# Non-blocking socket listener
+|   |-- handler/                  # Logic for processing each message type
+|   |   |-- FindNodeHandler.java
+|   |   |-- ChunkRequestHandler.java
+|   |-- message/                  # Immutable serialization containers
+|   |   |-- MessageType.java      # PING, STORE, FIND_NODE, CHUNK_REQ
+\end{lstlisting}
+
+\section*{Instructions for AI Coding Assistants (Claude Code Blueprint)}
+When writing or refactoring code for this repository, \textbf{you must strictly adhere to the following rules}:
+
+\begin{enumerate}
+
+
