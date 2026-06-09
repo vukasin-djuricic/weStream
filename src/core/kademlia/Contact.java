@@ -23,7 +23,7 @@ public final class Contact implements Serializable {
 	public Contact(String host, int port) {
 		this.host = host;
 		this.port = port;
-		this.id = NodeId.fromPort(port);
+		this.id = NodeId.fromEndpoint(host, port);
 		this.lastSeen = System.currentTimeMillis();
 	}
 

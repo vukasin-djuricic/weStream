@@ -28,12 +28,18 @@ public final class NodeId implements Comparable<NodeId> {
 	}
 
 	/**
-	 * Deterministic id for a servent, derived from its listener port via
-	 * <code>SHA-1("localhost:" + port)</code>. Deterministic on purpose: the same
-	 * port always maps to the same id, which keeps simulation runs reproducible.
+	 * Deterministic id for an endpoint, derived from <code>SHA-1(host + ":" + port)</code>.
+	 * Deterministic on purpose: the same endpoint always maps to the same id, which
+	 * keeps runs reproducible and gives distinct ids to distinct hosts (so two peers
+	 * on the same port but different machines do not collide).
 	 */
+	public static NodeId fromEndpoint(String host, int port) {
+		return fromBytes((host + ":" + port).getBytes(StandardCharsets.UTF_8));
+	}
+
+	/** Convenience for the local-simulation case: {@code fromEndpoint("localhost", port)}. */
 	public static NodeId fromPort(int port) {
-		return fromBytes(("localhost:" + port).getBytes(StandardCharsets.UTF_8));
+		return fromEndpoint("localhost", port);
 	}
 
 	/** SHA-1 of the given bytes, interpreted as a non-negative 160-bit id. */
@@ -45,6 +51,20 @@ public final class NodeId implements Comparable<NodeId> {
 		} catch (NoSuchAlgorithmException e) {
 			throw new IllegalStateException("SHA-1 is required but not available", e);
 		}
+	}
+
+	/** Reconstruct an id from its raw 20-byte big-endian wire form (see {@link #toBytes()}). */
+	public static NodeId fromValueBytes(byte[] raw) {
+		return new NodeId(new BigInteger(1, raw));
+	}
+
+	/** Fixed-width 20-byte (160-bit) big-endian representation, for the wire protocol. */
+	public byte[] toBytes() {
+		byte[] full = value.toByteArray(); // big-endian, may carry a sign byte or be short
+		byte[] out = new byte[ID_BITS / 8];
+		int copy = Math.min(full.length, out.length);
+		System.arraycopy(full, full.length - copy, out, out.length - copy, copy);
+		return out;
 	}
 
 	/** XOR distance to {@code other}, as a non-negative raw value. */

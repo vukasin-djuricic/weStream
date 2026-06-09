@@ -69,16 +69,21 @@ The brain of the system. Holds:
 
 When editing routing math, the overflow cases (where the ring wraps past CHORD_SIZE) are the subtle part and the easiest place to introduce bugs.
 
-### Kademlia routing — `core.kademlia.*` (in progress, coexists with Chord)
-The migration toward the weStream blueprint is being built **alongside** the live Chord code, not as a replacement yet. Phase 1 (foundation) exists and compiles, but is **not wired into the running system** — `ServentMain`/handlers still use Chord. Don't assume Kademlia is active.
+### Kademlia engine — `core.kademlia.*` (functional, coexists with Chord)
+Built **alongside** the live Chord code, not yet a replacement. The DHT works end-to-end over real UDP sockets, but is **not wired into `ServentMain`/the CLI yet** — the runnable app still starts Chord. Don't assume Kademlia is what runs when you launch the app. Strictly **pure JDK** (no imports outside `java.*`).
 
-Present today (pure data structures, no networking):
-- `NodeId` — 160-bit id (`BigInteger`), `fromPort(port)` = SHA-1 of `"localhost:"+port` (deterministic for reproducible runs). `distance` = XOR; `bucketIndex` = highest-set-bit of the distance (−1 for self).
-- `Contact` — Kademlia peer reference (`NodeId` + host + port + `lastSeen`); equality is by `NodeId` only. The Kademlia analogue of `core.ServentInfo`.
-- `KBucket` — capacity `k` (=20), least-recently-seen at head. `update()` refreshes/inserts, or returns the LRS contact as an **eviction candidate** when full (caller PINGs it; `replaceLeastRecentlySeen` only if dead). Fully `synchronized` per blueprint rule #3.
-- `RoutingTable` — `NodeId.ID_BITS` (160) buckets indexed by `bucketIndex`; `findClosest(target, count)` is the query behind FIND_NODE/FIND_VALUE.
+Identity & routing (phase 1):
+- `NodeId` — 160-bit id (`BigInteger`). `fromEndpoint(host, port)` / `fromPort(port)` = SHA-1; `distance` = XOR; `bucketIndex` = highest-set-bit of the distance (−1 for self); `toBytes()`/`fromValueBytes()` are the 20-byte wire form.
+- `Contact` — peer reference (`NodeId` from `host:port` + `lastSeen`); equality by `NodeId`.
+- `KBucket` — capacity k (=20), least-recently-seen at head; `update()` returns the LRS contact as an **eviction candidate** when full (PING it; `replaceLeastRecentlySeen` only if dead). Fully `synchronized` (rule #3).
+- `RoutingTable` — 160 buckets; `findClosest(target, count)` powers FIND_NODE/FIND_VALUE.
 
-Not yet built (next phases): RPC messages (`PING`/`STORE`/`FIND_NODE`/`FIND_VALUE`) + handlers with request/response correlation, the iterative `nodeLookup` driver (α=3, no busy-wait), and swapping discovery/join off Chord.
+Transport & RPC (phase 2):
+- `Transport` (interface) + `UdpTransport` — one `DatagramSocket` per node for send+receive. **Kademlia talks only to `Transport`**, so a NAT-traversing transport (UPnP/ICE-WebRTC/relay) can be added later without touching the engine. Bulk piece transfer will use TCP separately.
+- `Message` / `MessageType` / `MessageCodec` — RPC pairs PING↔PONG, FIND_NODE↔NODES, STORE↔STORED, FIND_VALUE↔(VALUE|NODES). Hand-rolled **length-prefixed binary** codec (NOT Java serialization — that's an RCE vector on peer input). `txId` correlates responses.
+- `KademliaService` — the live node. Inbound RPCs handled on the transport receive thread (non-blocking: table lookup + reply); responses complete a pending `CompletableFuture`; timeouts enforced by a scheduler (no busy-wait, rule #4). `bootstrap(peer)`, iterative `nodeLookup(target)` (α=3 parallel rounds), `ping`, `storeValue`, `findValue`. **Blocking ops (`nodeLookup`/`ping`/`findValue`) must NOT be called from the receive thread** — they wait on futures completed by that thread, so doing so deadlocks. Verified end-to-end with a temporary multi-node UDP self-test (join, lookup, ping live/dead, store/get).
+
+Not yet built (next phases): swapping discovery/join off Chord onto Kademlia in the runnable app; the piece/transfer layer (`transfer/`) and streaming window; NAT traversal; media/player (`media/`).
 
 ### Messaging — `servent.message.*` + `servent.message.util.*`
 - Messages are immutable, `Serializable`. `BasicMessage` is the base; equality/hash use `(messageId, senderPort)`. `MessageType` enum drives dispatch.
