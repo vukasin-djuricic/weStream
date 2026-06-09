@@ -77,9 +77,4 @@ public final class Message {
 	public static Message value(Contact self, long txId, byte[] value) {
 		return new Message(MessageType.VALUE, txId, self, null, value, null);
 	}
-
-	/** The sender's reachable endpoint, as a contact to reply to / route through. */
-	public Contact sender() {
-		return new Contact(senderHost, senderPort);
-	}
 }

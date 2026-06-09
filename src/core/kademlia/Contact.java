@@ -1,7 +1,5 @@
 package core.kademlia;
 
-import java.io.Serializable;
-
 /**
  * A reference to another Kademlia node: its {@link NodeId} plus the address
  * needed to reach it. This is the Kademlia counterpart of the Chord
@@ -11,9 +9,7 @@ import java.io.Serializable;
  * the only mutable field; identity ({@link #equals}/{@link #hashCode}) is based
  * solely on the immutable {@link NodeId}.
  */
-public final class Contact implements Serializable {
-
-	private static final long serialVersionUID = 1L;
+public final class Contact {
 
 	private final NodeId id;
 	private final String host;

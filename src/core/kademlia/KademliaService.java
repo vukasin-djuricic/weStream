@@ -35,6 +35,8 @@ public class KademliaService {
 	/** Lookup concurrency: how many nodes we query in parallel per round. */
 	public static final int ALPHA = 3;
 	public static final long RPC_TIMEOUT_MS = 2000;
+	/** Cap on locally stored keys, to bound memory against STORE flooding. */
+	public static final int MAX_STORE_KEYS = 4096;
 
 	private final Contact self;
 	private final RoutingTable routingTable;
@@ -78,8 +80,11 @@ public class KademliaService {
 			return; // drop garbage rather than crash the receive loop
 		}
 
-		// Every contact we hear from is a routing-table candidate.
-		routingTable.update(msg.sender());
+		// Learn the address we ACTUALLY heard from (the wire source), never the
+		// self-reported endpoint in the payload — a peer could spoof that to poison
+		// our table or make itself unreachable. (Assumes the transport's source
+		// address is the peer's reachable address; a NAT transport must guarantee this.)
+		routingTable.update(wireSource);
 
 		if (msg.type.isResponse()) {
 			CompletableFuture<Message> waiter = pending.remove(msg.txId);
@@ -87,18 +92,19 @@ public class KademliaService {
 				waiter.complete(msg);
 			}
 		} else {
-			handleRequest(msg);
+			handleRequest(wireSource, msg);
 		}
 	}
 
-	private void handleRequest(Message req) {
-		Contact replyTo = req.sender();
+	private void handleRequest(Contact replyTo, Message req) {
 		switch (req.type) {
 			case PING -> reply(replyTo, Message.pong(self, req.txId));
 			case FIND_NODE -> reply(replyTo,
 					Message.nodes(self, req.txId, routingTable.findClosest(req.target, RoutingTable.K)));
 			case STORE -> {
-				store.put(req.target, req.value);
+				if (store.size() < MAX_STORE_KEYS || store.containsKey(req.target)) {
+					store.put(req.target, req.value);
+				}
 				reply(replyTo, Message.stored(self, req.txId));
 			}
 			case FIND_VALUE -> {

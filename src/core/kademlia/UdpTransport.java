@@ -39,6 +39,11 @@ public class UdpTransport implements Transport {
 		this.handler = handler;
 	}
 
+	/** The actual bound port — useful when constructed with port 0 (ephemeral). */
+	public int getLocalPort() {
+		return socket.getLocalPort();
+	}
+
 	@Override
 	public void start() {
 		receiver = new Thread(this::receiveLoop, "kad-udp-recv-" + port);
@@ -56,7 +61,12 @@ public class UdpTransport implements Transport {
 				BiConsumer<Contact, byte[]> h = handler;
 				if (h != null) {
 					Contact from = new Contact(packet.getAddress().getHostAddress(), packet.getPort());
-					h.accept(from, data);
+					try {
+						h.accept(from, data);
+					} catch (RuntimeException handlerError) {
+						// A bad packet must never kill the receive loop.
+						System.err.println("handler error on " + port + ": " + handlerError);
+					}
 				}
 			} catch (IOException e) {
 				if (running) {

@@ -29,6 +29,8 @@ import java.util.List;
  */
 public class MessageCodec {
 
+	private static final MessageType[] TYPES = MessageType.values();
+
 	public byte[] encode(Message m) {
 		ByteArrayOutputStream bytes = new ByteArrayOutputStream();
 		try (DataOutputStream out = new DataOutputStream(bytes)) {
@@ -59,7 +61,11 @@ public class MessageCodec {
 
 	public Message decode(byte[] data) {
 		try (DataInputStream in = new DataInputStream(new ByteArrayInputStream(data))) {
-			MessageType type = MessageType.values()[in.readUnsignedByte()];
+			int ordinal = in.readUnsignedByte();
+			if (ordinal >= TYPES.length) {
+				throw new IOException("unknown message type ordinal " + ordinal);
+			}
+			MessageType type = TYPES[ordinal];
 			long txId = in.readLong();
 			byte[] idBytes = new byte[20];
 			in.readFully(idBytes);
@@ -76,11 +82,18 @@ public class MessageCodec {
 				target = NodeId.fromValueBytes(t);
 			}
 			if (hasValue(type)) {
-				value = new byte[in.readInt()];
+				int len = in.readInt();
+				if (len < 0 || len > data.length) {
+					throw new IOException("bad value length " + len);
+				}
+				value = new byte[len];
 				in.readFully(value);
 			}
 			if (hasContacts(type)) {
 				int n = in.readInt();
+				if (n < 0 || n > data.length) {
+					throw new IOException("bad contact count " + n);
+				}
 				contacts = new ArrayList<>(n);
 				for (int i = 0; i < n; i++) {
 					String host = in.readUTF();
