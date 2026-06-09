@@ -22,7 +22,9 @@ javac -d out/production/weStream $(find src -name '*.java')
 ```
 (The child-process classpath in `MultipleServentStarter` was previously hardcoded with Windows backslashes — `out\\production\\KiDS-vezbe9` — which broke on macOS/Linux. It now uses forward slashes and the `weStream` module name.)
 
-There is **no test suite**. "Testing" means running the simulation and reading the per-node output files in `chord/output/`. Scripted scenarios are driven by feeding commands through `chord/input/serventN_in.txt` (one CLI command per line).
+**Validation:** run `./check.sh` after every change — it compiles `src` + `test` and runs `core.kademlia.KademliaCheck`, a zero-dependency regression suite (identity/routing/codec unit checks + an end-to-end group over real UDP sockets). It exits non-zero on any failure, so the same command works in a git hook or CI. Test code lives in `test/` (kept out of `src/` so it never ships in the app) but in package `core.kademlia` to reach package-internal types. When you fix a bug, add a check that would have caught it.
+
+For the **Chord** side there is no automated suite: "testing" means running the simulation and reading the per-node output files in `chord/output/`, with scripted scenarios fed through `chord/input/serventN_in.txt` (one CLI command per line).
 
 ## Dependency policy
 
