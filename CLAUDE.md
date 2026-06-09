@@ -68,6 +68,17 @@ The brain of the system. Holds:
 
 When editing routing math, the overflow cases (where the ring wraps past CHORD_SIZE) are the subtle part and the easiest place to introduce bugs.
 
+### Kademlia routing — `core.kademlia.*` (in progress, coexists with Chord)
+The migration toward the weStream blueprint is being built **alongside** the live Chord code, not as a replacement yet. Phase 1 (foundation) exists and compiles, but is **not wired into the running system** — `ServentMain`/handlers still use Chord. Don't assume Kademlia is active.
+
+Present today (pure data structures, no networking):
+- `NodeId` — 160-bit id (`BigInteger`), `fromPort(port)` = SHA-1 of `"localhost:"+port` (deterministic for reproducible runs). `distance` = XOR; `bucketIndex` = highest-set-bit of the distance (−1 for self).
+- `Contact` — Kademlia peer reference (`NodeId` + host + port + `lastSeen`); equality is by `NodeId` only. The Kademlia analogue of `core.ServentInfo`.
+- `KBucket` — capacity `k` (=20), least-recently-seen at head. `update()` refreshes/inserts, or returns the LRS contact as an **eviction candidate** when full (caller PINGs it; `replaceLeastRecentlySeen` only if dead). Fully `synchronized` per blueprint rule #3.
+- `RoutingTable` — `NodeId.ID_BITS` (160) buckets indexed by `bucketIndex`; `findClosest(target, count)` is the query behind FIND_NODE/FIND_VALUE.
+
+Not yet built (next phases): RPC messages (`PING`/`STORE`/`FIND_NODE`/`FIND_VALUE`) + handlers with request/response correlation, the iterative `nodeLookup` driver (α=3, no busy-wait), and swapping discovery/join off Chord.
+
 ### Messaging — `servent.message.*` + `servent.message.util.*`
 - Messages are immutable, `Serializable`. `BasicMessage` is the base; equality/hash use `(messageId, senderPort)`. `MessageType` enum drives dispatch.
 - **Send:** `MessageUtil.sendMessage(msg)` spawns a `DelayedMessageSender` thread that sleeps a **random 500–1500 ms** before opening a socket and writing the object. This is intentional jitter; ordering between messages is **not** guaranteed (non-FIFO).
