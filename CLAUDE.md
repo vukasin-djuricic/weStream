@@ -26,17 +26,18 @@ There is **no test suite**. "Testing" means running the simulation and reading t
 
 ## Dependency policy
 
-**Default: zero runtime dependencies.** Do not add third-party libraries on a whim. This is a pedagogical concurrency/distributed-systems project — the point is to implement routing, k-buckets, the sliding-window picker, and async logging *by hand*, and the JDK already covers the core needs (`java.util.concurrent` for `BlockingQueue`/`Semaphore`/`CountDownLatch`/`ExecutorService`, `java.security.MessageDigest` for SHA-1 160-bit Kademlia IDs, `java.net`/NIO for sockets). Staying zero-dep also keeps the "clone and run" simplicity: no Maven/Gradle, trivial classpath. The blueprint rules (#3–#6) explicitly mandate hand-rolled implementations.
+**The zero-dependency rule applies ONLY to the Kademlia / P2P engine — not the whole project.** This is a deliberate, user-set boundary:
 
-**Logging is NOT an exception** — implement a zero-dependency async logger (`BlockingQueue` + a daemon consumer thread that does the string formatting and file I/O off the network threads). See the logging note in Conventions. Do **not** pull in SLF4J/Logback unless the project later needs MDC, log rotation, or runtime reconfiguration.
+- **`core.kademlia` (and the hand-written DHT/P2P engine logic: routing, k-buckets, lookup, piece selection, sliding-window picker) MUST stay pure JDK.** No third-party libraries — this is where the learning is, and it must be implemented by hand. The JDK covers it: `java.util.concurrent` (`BlockingQueue`/`Semaphore`/`CountDownLatch`/`CompletableFuture`/`ExecutorService`), `java.security.MessageDigest` (SHA-1 160-bit ids), `java.net` (UDP `DatagramSocket` for RPC, TCP for data transfer). The constraint is **import-level**: even once Gradle exists, nothing under `core.kademlia` may import outside the JDK. Blueprint rules #3–#6 mandate hand-rolled implementations here.
+- **Everything else (UI, media/player, packaging, frontend, NAT traversal plumbing) MAY use modern libraries.** The goal there is simply: make it work, be as modern as Java allows, and ship as a single-window native app. Hand-rolling is not a virtue outside the engine.
 
-**Treat these two areas separately — here a dependency may genuinely earn its keep:**
-1. **Message deserialization (security).** The current `MessageUtil.readMessage` uses `ObjectInputStream.readObject()` on bytes from arbitrary peers — a classic deserialization/RCE vector and brittle across versions. Prefer replacing it with an explicit, length-prefixed (de)serializer. That can and should be done **zero-dep**; a serialization library (Protobuf/Jackson) is acceptable only if a hand-rolled format proves insufficient. Either way, do not keep trusting native Java serialization in a real P2P path.
-2. **Tests.** The project has none today. Introducing **JUnit** (dev/test scope only, not a runtime dependency) is acceptable and encouraged when adding real tests — a hand-rolled test runner is not worth it.
+**Player / UI (decided direction):** **JavaFX (UI) + vlcj/libVLC (embedded video — plays everything via the VLC engine), packaged with `jpackage` + `jlink`** into a native installer with an embedded JRE and bundled libVLC. vlcj's callback/PixelBuffer rendering blits libVLC frames into a JavaFX node, so video and JavaFX controls live in the **same single window** (true native app feel). Alternative if a web-style UI is preferred: **JCEF** (embedded Chromium, "Electron in Java") — heavier (~200MB+). **Avoid** JavaFX MediaView (weak codecs) as the player.
 
-**Only when/if this stops being a simulation and becomes a real P2P streaming service** do heavyweight runtime deps (e.g. Netty for async NIO under high churn, Protobuf for the wire format) become a net win over hand-rolling. Until then, default to no.
+**Build tooling:** introducing **Gradle** is expected once the app/UI/media layer lands (to pull JavaFX + vlcj and drive `jpackage`/`jlink`). Gradle is dev tooling, not a runtime dependency, and does **not** relax the `core.kademlia` import rule above. The engine phases (Kademlia RPC, lookup) are still written and compiled as plain JDK today — defer Gradle until the player/UI work actually begins.
 
-Whenever you do add any dependency, you must also introduce the build tooling to manage it (a `pom.xml`/`build.gradle`) — there is none today — and call that out explicitly, since it changes how the project is built and run.
+**Logging:** implement a zero-dependency async logger for the engine (`BlockingQueue` + daemon consumer thread, formatting/I-O off the network threads — see Conventions). The app/UI layer may use a real logging framework if convenient.
+
+**Other notes:** Don't trust native Java serialization (`ObjectInputStream.readObject`) on bytes from arbitrary peers — use an explicit length-prefixed binary format for the engine wire protocol (hand-rolled, zero-dep). JUnit is fine for tests (dev/test scope).
 
 ## Configuration (`chord/servent_list.properties`)
 
