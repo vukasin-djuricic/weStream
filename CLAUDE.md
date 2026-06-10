@@ -2,11 +2,32 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+## Project status & roadmap (READ FIRST)
+
+**Where we are (2026-06):** the project is migrating from a legacy **Chord** DHT (the original course framework) to a **Kademlia**-based P2P engine, the foundation of the aspirational "weStream" (BitTorrent download + Popcorn-Time streaming). The Kademlia engine (`core.kademlia`) is built, hardened, and tested — but **NOT yet wired into the runnable app**: launching `ServentMain` / `MultipleServentStarter` still runs **Chord**. Kademlia coexists alongside it. First thing to do in a fresh session: run `./check.sh` (50 checks) to confirm green.
+
+**Done:**
+- Phase 1 — routing primitives: `NodeId` (160-bit, XOR), `Contact`, `KBucket` (k=20, LRS), `RoutingTable`.
+- Phase 2 — `UdpTransport` + RPC (PING/FIND_NODE/STORE/FIND_VALUE), `CompletableFuture` correlation + scheduler timeouts, iterative `nodeLookup` (α=3), `bootstrap`, `storeValue`/`findValue`.
+- Hardening (codec bounds, wire-source routing, STORE cap) + regression suite `./check.sh`.
+
+**Next — Phase 3: wire Kademlia into the runnable app.** Concretely:
+1. `ServentMain` starts a `KademliaService` + `UdpTransport` instead of the Chord listener/initializer.
+2. Join via a seed endpoint (config/arg; node 0 = seed) → `kademlia.bootstrap(seed)`. (LAN multicast auto-discovery is a later nicety.)
+3. Rewrite CLI: `dht_put`/`dht_get` → `storeValue`/`findValue` (string key → `NodeId` via SHA-1, value = bytes); replace Chord's `successor_info` with a Kademlia `routing_info`.
+4. `AppConfig` holds the `KademliaService`; decide Chord's fate (keep dormant vs delete). Keep `MultipleServentStarter` as a local multi-node test harness.
+
+Then: Phase 4 — transfer/streaming layer (`transfer/`: pieces, bitfield gossip, sliding-window picker). Phase 5 — media/player (`media/`).
+
+**Key decisions (do not re-litigate — see memory + Dependency policy):** zero-dependency applies ONLY to `core.kademlia` (pure JDK); UI/media/packaging may use modern libs. Player = JavaFX + vlcj/libVLC via jpackage (single-window native app); Gradle introduced when that layer lands. Connectivity LAN-first, NAT traversal deferred behind the `Transport` interface. Commits use no `Co-Authored-By` trailer.
+
+**Known engine gaps (deferred):** no RPC retry on UDP loss; serial awaits in lookup/store/findValue (a dead node costs a full timeout); `findValue` doesn't iterate through NODES; no STORE TTL/republish.
+
 ## What this repo actually is
 
-The active codebase (`KiDS-vezbe9/`) is a **Chord DHT** simulation framework — a university course project (RAF KIDS, vezbe 9). It simulates a distributed system by launching the bootstrap server and N "servent" nodes as **separate JVM processes on localhost**, each on its own port, communicating via Java-serialized objects over per-message TCP sockets.
+The repo is a **single root** (`src/`, `test/`, `chord/`). It contains **two layers side by side**: the legacy **Chord DHT** simulation (`core.chord`, `servent.*`, `app.BootstrapServer` — the original RAF KIDS course framework, which still drives the runnable app), and the new **Kademlia engine** (`core.kademlia` — pure JDK, functional, but not yet the app's entry path).
 
-`Readme.tex` describes an **aspirational** "weStream" P2P video streaming engine built on a **Kademlia** DHT (XOR metric, k-buckets, bitfield gossip, chunk streaming). **None of that exists in code yet.** There is no Kademlia, no streaming, no UDP — only the Chord ring. Treat `Readme.tex` as a target spec / direction, not a description of the current system. When asked to implement "weStream" features, you are evolving the Chord framework toward that vision.
+The Chord side simulates a distributed system by launching the bootstrap server and N "servent" nodes as **separate JVM processes on localhost**, each on its own port, over Java-serialized TCP messages. `Readme.tex` is the **aspirational** weStream spec (Kademlia + bitfield gossip + chunk streaming); treat it as direction, not current state — the streaming/transfer layers don't exist yet.
 
 ## Build & run
 
