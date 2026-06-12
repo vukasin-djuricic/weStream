@@ -230,6 +230,10 @@ public class KademliaService {
 
 	/** Store a value at the k nodes closest to its key. Must run on an application thread. */
 	public void storeValue(NodeId key, byte[] value) {
+		// TODO(phase4-hardening): this local put bypasses the MAX_STORE_KEYS cap
+		// (that cap only guards the inbound STORE handler), so a heavy writer grows
+		// `store` unbounded. Route all writes through a bounded store (LRU + TTL) and
+		// add republish. See CLAUDE.md "Known engine gaps".
 		store.put(key, value); // keep a copy locally too
 		for (Contact c : nodeLookup(key)) {
 			try {
@@ -253,6 +257,9 @@ public class KademliaService {
 			try {
 				Message resp = await(rpc(c, Message.findValue(self, nextTx(), key)));
 				if (resp.type == MessageType.VALUE) {
+					// TODO(phase4-hardening): optional cache-on-read here (store.put(key, resp.value))
+					// so reads survive the holder dying — but ONLY via a bounded store (LRU + TTL),
+					// else heavy readers grow memory unbounded. See CLAUDE.md "Known engine gaps".
 					return resp.value;
 				}
 			} catch (Exception ignored) {

@@ -11,43 +11,41 @@ import cli.command.DHTGetCommand;
 import cli.command.DHTPutCommand;
 import cli.command.InfoCommand;
 import cli.command.PauseCommand;
+import cli.command.RoutingInfoCommand;
 import cli.command.StopCommand;
-import cli.command.SuccessorInfo;
-import servent.SimpleServentListener;
 
 /**
  * A simple CLI parser. Each command has a name and arbitrary arguments.
- * 
+ *
  * Currently supported commands:
- * 
+ *
  * <ul>
- * <li><code>info</code> - prints information about the current node</li>
- * <li><code>pause [ms]</code> - pauses exection given number of ms - useful when scripting</li>
- * <li><code>ping [id]</code> - sends a PING message to node [id] </li>
- * <li><code>broadcast [text]</code> - broadcasts the given text to all nodes</li>
- * <li><code>causal_broadcast [text]</code> - causally broadcasts the given text to all nodes</li>
- * <li><code>print_causal</code> - prints all received causal broadcast messages</li>
- * <li><code>stop</code> - stops the servent and program finishes</li>
+ * <li><code>info</code> - prints this Kademlia node's id and endpoint</li>
+ * <li><code>pause [ms]</code> - pauses execution given number of ms - useful when scripting</li>
+ * <li><code>routing_info</code> - prints the contacts in this node's routing table</li>
+ * <li><code>dht_put [key] [value]</code> - stores a string value under a string key (storeValue)</li>
+ * <li><code>dht_get [key]</code> - retrieves the value for a string key (findValue)</li>
+ * <li><code>stop</code> - stops the node and program finishes</li>
  * </ul>
- * 
+ *
  * @author bmilojkovic
  *
  */
 public class CLIParser implements Runnable, Cancellable {
 
 	private volatile boolean working = true;
-	
+
 	private final List<CLICommand> commandList;
-	
-	public CLIParser(SimpleServentListener listener) {
+
+	public CLIParser() {
 		this.commandList = new ArrayList<>();
-		
+
 		commandList.add(new InfoCommand());
 		commandList.add(new PauseCommand());
-		commandList.add(new SuccessorInfo());
+		commandList.add(new RoutingInfoCommand());
 		commandList.add(new DHTGetCommand());
 		commandList.add(new DHTPutCommand());
-		commandList.add(new StopCommand(this, listener));
+		commandList.add(new StopCommand(this));
 	}
 	
 	@Override

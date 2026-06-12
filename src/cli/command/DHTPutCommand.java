@@ -1,8 +1,15 @@
 package cli.command;
 
-import app.AppConfig;
-import core.chord.ChordState;
+import java.nio.charset.StandardCharsets;
 
+import app.AppConfig;
+import core.kademlia.NodeId;
+
+/**
+ * <code>dht_put &lt;key&gt; &lt;value&gt;</code> — stores a string value under a
+ * string key. The key is hashed to a 160-bit {@link NodeId} (SHA-1) and the value
+ * is replicated to the k nodes closest to that id via {@code storeValue}.
+ */
 public class DHTPutCommand implements CLICommand {
 
 	@Override
@@ -12,31 +19,20 @@ public class DHTPutCommand implements CLICommand {
 
 	@Override
 	public void execute(String args) {
-		String[] splitArgs = args.split(" ");
-		
-		if (splitArgs.length == 2) {
-			int key = 0;
-			int value = 0;
-			try {
-				key = Integer.parseInt(splitArgs[0]);
-				value = Integer.parseInt(splitArgs[1]);
-				
-				if (key < 0 || key >= ChordState.CHORD_SIZE) {
-					throw new NumberFormatException();
-				}
-				if (value < 0) {
-					throw new NumberFormatException();
-				}
-				
-				AppConfig.chordState.putValue(key, value);
-			} catch (NumberFormatException e) {
-				AppConfig.timestampedErrorPrint("Invalid key and value pair. Both should be ints. 0 <= key <= " + ChordState.CHORD_SIZE
-						+ ". 0 <= value.");
-			}
-		} else {
-			AppConfig.timestampedErrorPrint("Invalid arguments for put");
+		int spacePos = (args == null) ? -1 : args.indexOf(' ');
+		if (spacePos == -1) {
+			AppConfig.timestampedErrorPrint("Usage: dht_put <key> <value>");
+			return;
 		}
 
+		String key = args.substring(0, spacePos);
+		String value = args.substring(spacePos + 1);
+
+		NodeId keyId = NodeId.fromBytes(key.getBytes(StandardCharsets.UTF_8));
+		// Runs on the CLI thread, so this blocking lookup-and-store is safe.
+		AppConfig.kademliaService.storeValue(keyId, value.getBytes(StandardCharsets.UTF_8));
+
+		AppConfig.timestampedStandardPrint("Stored '" + key + "' = '" + value + "'");
 	}
 
 }

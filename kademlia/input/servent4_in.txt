@@ -1,0 +1,5 @@
+pause 15000
+routing_info
+dht_get hello
+pause 10000
+stop

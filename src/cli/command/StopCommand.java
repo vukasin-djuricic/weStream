@@ -2,18 +2,20 @@ package cli.command;
 
 import app.AppConfig;
 import cli.CLIParser;
-import servent.SimpleServentListener;
 
+/**
+ * <code>stop</code> — stops the CLI loop and closes the UDP transport. Closing
+ * the socket ends the daemon receive thread; with no non-daemon threads left,
+ * the JVM exits.
+ */
 public class StopCommand implements CLICommand {
 
-	private CLIParser parser;
-	private SimpleServentListener listener;
-	
-	public StopCommand(CLIParser parser, SimpleServentListener listener) {
+	private final CLIParser parser;
+
+	public StopCommand(CLIParser parser) {
 		this.parser = parser;
-		this.listener = listener;
 	}
-	
+
 	@Override
 	public String commandName() {
 		return "stop";
@@ -23,7 +25,7 @@ public class StopCommand implements CLICommand {
 	public void execute(String args) {
 		AppConfig.timestampedStandardPrint("Stopping...");
 		parser.stop();
-		listener.stop();
+		AppConfig.transport.close();
 	}
 
 }

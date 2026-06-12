@@ -11,7 +11,7 @@ public class InfoCommand implements CLICommand {
 
 	@Override
 	public void execute(String args) {
-		AppConfig.timestampedStandardPrint("My info: " + AppConfig.myServentInfo);
+		AppConfig.timestampedStandardPrint("My info: " + AppConfig.kademliaService.self());
 	}
 
 }

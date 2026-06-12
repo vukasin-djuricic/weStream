@@ -4,38 +4,35 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project status & roadmap (READ FIRST)
 
-**Where we are (2026-06):** the project is migrating from a legacy **Chord** DHT (the original course framework) to a **Kademlia**-based P2P engine, the foundation of the aspirational "weStream" (BitTorrent download + Popcorn-Time streaming). The Kademlia engine (`core.kademlia`) is built, hardened, and tested — but **NOT yet wired into the runnable app**: launching `ServentMain` / `MultipleServentStarter` still runs **Chord**. Kademlia coexists alongside it. First thing to do in a fresh session: run `./check.sh` (50 checks) to confirm green.
+**Where we are (2026-06):** the project has migrated from a legacy **Chord** DHT (the original course framework) to a **Kademlia**-based P2P engine, the foundation of the aspirational "weStream" (BitTorrent download + Popcorn-Time streaming). **The runnable app now runs Kademlia** — launching `ServentMain` / `MultipleServentStarter` boots a `KademliaService` over UDP (Phase 3 done). The Chord classes still compile but are dormant (never started), kept as reference. First thing to do in a fresh session: run `./check.sh` (50 checks) to confirm green.
 
 **Done:**
 - Phase 1 — routing primitives: `NodeId` (160-bit, XOR), `Contact`, `KBucket` (k=20, LRS), `RoutingTable`.
 - Phase 2 — `UdpTransport` + RPC (PING/FIND_NODE/STORE/FIND_VALUE), `CompletableFuture` correlation + scheduler timeouts, iterative `nodeLookup` (α=3), `bootstrap`, `storeValue`/`findValue`.
 - Hardening (codec bounds, wire-source routing, STORE cap) + regression suite `./check.sh`.
+- Phase 3 — Kademlia wired into the runnable app. `ServentMain` boots `UdpTransport` + `KademliaService` + `CLIParser`; non-seed nodes `bootstrap(seed)` on a dedicated `kad-bootstrap` thread (node 0 = seed). `AppConfig` holds `kademliaService`/`transport`/`myPort`/`isSeedNode`/`SEED_HOST`/`SEED_PORT`; slim `readConfig` (only `servent_count` + `serventN.port`, no `chord_size`/`bs.port`, no `ServentInfo`). CLI: `dht_put`/`dht_get` → `storeValue`/`findValue` (string key → SHA-1 `NodeId`, value = UTF-8 bytes), `successor_info` replaced by `routing_info`, `info` prints `kademliaService.self()`, `stop` closes the transport. `MultipleServentStarter` spawns N `ServentMain` nodes with no bootstrap-server JVM, targeting a new `kademlia/` test dir (mirrors `chord/`). Verified end-to-end: store on node 0, `dht_get` resolves on node 4 via `findValue`. Chord kept dormant (Option A).
 
-**Next — Phase 3: wire Kademlia into the runnable app.** Concretely:
-1. `ServentMain` starts a `KademliaService` + `UdpTransport` instead of the Chord listener/initializer.
-2. Join via a seed endpoint (config/arg; node 0 = seed) → `kademlia.bootstrap(seed)`. (LAN multicast auto-discovery is a later nicety.)
-3. Rewrite CLI: `dht_put`/`dht_get` → `storeValue`/`findValue` (string key → `NodeId` via SHA-1, value = bytes); replace Chord's `successor_info` with a Kademlia `routing_info`.
-4. `AppConfig` holds the `KademliaService`; decide Chord's fate (keep dormant vs delete). Keep `MultipleServentStarter` as a local multi-node test harness.
-
-Then: Phase 4 — transfer/streaming layer (`transfer/`: pieces, bitfield gossip, sliding-window picker). Phase 5 — media/player (`media/`).
+**Next — Phase 4: transfer/streaming layer** (`transfer/`: pieces, bitfield gossip, sliding-window picker). Phase 5 — media/player (`media/`). Before/with Phase 4, consider folding in the deferred engine gaps below when robustness matters.
 
 **Key decisions (do not re-litigate — see memory + Dependency policy):** zero-dependency applies ONLY to `core.kademlia` (pure JDK); UI/media/packaging may use modern libs. Player = JavaFX + vlcj/libVLC via jpackage (single-window native app); Gradle introduced when that layer lands. Connectivity LAN-first, NAT traversal deferred behind the `Transport` interface. Commits use no `Co-Authored-By` trailer.
 
-**Known engine gaps (deferred):** no RPC retry on UDP loss; serial awaits in lookup/store/findValue (a dead node costs a full timeout); `findValue` doesn't iterate through NODES; no STORE TTL/republish.
+**Known engine gaps (deferred):** no RPC retry on UDP loss; serial awaits in lookup/store/findValue (a dead node costs a full timeout); `findValue` doesn't iterate through NODES; no STORE TTL/republish. **Unbounded local `store`:** the `MAX_STORE_KEYS` cap is enforced ONLY on the inbound STORE handler — the originator's local `store.put` in `storeValue` (and any future cache-on-read in `findValue`) bypass it, so a heavy writer/reader grows the key→value map without bound. Fix = route every write through a bounded store (LRU cap + TTL) and add republish; only then add `findValue` cache-on-read. Note: the DHT `store` is for SMALL values (infohash → peer/location metadata) — actual piece/media bytes belong in the Phase-4 transfer layer's own bounded cache, never in the DHT map. (Marked inline as `TODO(phase4-hardening)` in `KademliaService.storeValue`/`findValue`.)
 
 ## What this repo actually is
 
-The repo is a **single root** (`src/`, `test/`, `chord/`). It contains **two layers side by side**: the legacy **Chord DHT** simulation (`core.chord`, `servent.*`, `app.BootstrapServer` — the original RAF KIDS course framework, which still drives the runnable app), and the new **Kademlia engine** (`core.kademlia` — pure JDK, functional, but not yet the app's entry path).
+The repo is a **single root** (`src/`, `test/`, `chord/`, `kademlia/`). It contains **two layers side by side**: the new **Kademlia engine** (`core.kademlia` — pure JDK), which now **drives the runnable app** (`ServentMain` boots it over UDP), and the legacy **Chord DHT** simulation (`core.chord`, `servent.*`, `app.BootstrapServer`, `app.ServentInitializer` — the original RAF KIDS course framework), which still compiles but is **dormant** (no longer started by any entry point), kept as reference.
 
-The Chord side simulates a distributed system by launching the bootstrap server and N "servent" nodes as **separate JVM processes on localhost**, each on its own port, over Java-serialized TCP messages. `Readme.tex` is the **aspirational** weStream spec (Kademlia + bitfield gossip + chunk streaming); treat it as direction, not current state — the streaming/transfer layers don't exist yet.
+The (dormant) Chord side simulated a distributed system by launching a bootstrap server and N "servent" nodes as **separate JVM processes on localhost**, each on its own port, over Java-serialized TCP messages. The live Kademlia app reuses the same multi-process-on-localhost harness shape (`MultipleServentStarter`) but over UDP with no bootstrap server (node 0 is the seed). `Readme.tex` is the **aspirational** weStream spec (Kademlia + bitfield gossip + chunk streaming); treat it as direction, not current state — the streaming/transfer layers don't exist yet.
+
+The root `digest.txt` (~140KB) is a **generated gitingest dump of the whole repo** — gitignored, not source. Don't read it (use the real files), don't edit it, don't commit it.
 
 ## Build & run
 
 This is a plain **IntelliJ IDEA** project (`weStream.iml`), no Maven/Gradle. The repo is a **single root**: sources in `src/` (packages `app` = process startup/bootstrap, `core` = node identity + routing state, `cli`, `servent` = transport/messaging), compiled classes in `out/production/weStream/`. (Historically the code lived in a nested `KiDS-vezbe9/` subfolder with its own IntelliJ project — that nesting has been flattened; if you see references to `KiDS-vezbe9` anywhere, they are stale.)
 
-Two entry points (both have `main`):
-- `app.MultipleServentStarter` — the normal way to run. Launches `app.BootstrapServer` then spawns `SERVENT_COUNT` `app.ServentMain` processes, redirecting each node's stdin/stdout/stderr to `chord/input/serventN_in.txt`, `chord/output/serventN_out.txt`, `chord/error/serventN_err.txt`. Type `stop` in its console to kill all processes. It spawns the child JVMs with classpath `out/production/weStream`, so **compile first** (IntelliJ build, or the `javac` line below).
-- `app.ServentMain <servent_list.properties> <serventId>` — run a single node manually.
+Two entry points (both have `main`), now Kademlia:
+- `app.MultipleServentStarter` — the normal way to run. Spawns `SERVENT_COUNT` `app.ServentMain` processes (node 0 = seed, started first; no bootstrap-server JVM), redirecting each node's stdin/stdout/stderr to `kademlia/input/serventN_in.txt`, `kademlia/output/serventN_out.txt`, `kademlia/error/serventN_err.txt`. Type `stop` in its console to kill all processes. It spawns the child JVMs with classpath `out/production/weStream`, so **compile first** (IntelliJ build, or the `javac` line below).
+- `app.ServentMain <servent_list.properties> <serventId>` — run a single node manually (id 0 = seed; others bootstrap to `servent0.port`). CLI commands: `info`, `pause <ms>`, `routing_info`, `dht_put <key> <value>`, `dht_get <key>`, `stop`.
 
 Compile manually from the repo root:
 ```
@@ -45,7 +42,7 @@ javac -d out/production/weStream $(find src -name '*.java')
 
 **Validation:** run `./check.sh` after every change — it compiles `src` + `test` and runs `core.kademlia.KademliaCheck`, a zero-dependency regression suite (identity/routing/codec unit checks + an end-to-end group over real UDP sockets). It exits non-zero on any failure, so the same command works in a git hook or CI. Test code lives in `test/` (kept out of `src/` so it never ships in the app) but in package `core.kademlia` to reach package-internal types. When you fix a bug, add a check that would have caught it.
 
-For the **Chord** side there is no automated suite: "testing" means running the simulation and reading the per-node output files in `chord/output/`, with scripted scenarios fed through `chord/input/serventN_in.txt` (one CLI command per line).
+For the **app** (Kademlia) side there is no automated suite: "testing" means running the simulation (`java -cp out/production/weStream app.MultipleServentStarter`) and reading the per-node output files in `kademlia/output/`, with scripted scenarios fed through `kademlia/input/serventN_in.txt` (one CLI command per line). The committed scenario stores `hello=world` on node 0 and resolves `dht_get hello` on node 4. The dormant **Chord** side, if ever revived, used the parallel `chord/` dir the same way.
 
 ## Dependency policy
 
@@ -92,8 +89,8 @@ The brain of the system. Holds:
 
 When editing routing math, the overflow cases (where the ring wraps past CHORD_SIZE) are the subtle part and the easiest place to introduce bugs.
 
-### Kademlia engine — `core.kademlia.*` (functional, coexists with Chord)
-Built **alongside** the live Chord code, not yet a replacement. The DHT works end-to-end over real UDP sockets, but is **not wired into `ServentMain`/the CLI yet** — the runnable app still starts Chord. Don't assume Kademlia is what runs when you launch the app. Strictly **pure JDK** (no imports outside `java.*`).
+### Kademlia engine — `core.kademlia.*` (drives the runnable app)
+This is now what the app runs: `ServentMain` boots a `UdpTransport` + `KademliaService` (see "app entry / boot path" below), the CLI maps `dht_put`/`dht_get`/`routing_info` onto it, and the engine has fully **replaced** Chord as the live path (Chord is dormant). Strictly **pure JDK** (no imports outside `java.*`).
 
 Identity & routing (phase 1):
 - `NodeId` — 160-bit id (`BigInteger`). `fromEndpoint(host, port)` / `fromPort(port)` = SHA-1; `distance` = XOR; `bucketIndex` = highest-set-bit of the distance (−1 for self); `toBytes()`/`fromValueBytes()` are the 20-byte wire form.
@@ -117,7 +114,7 @@ Not yet built (next phases): swapping discovery/join off Chord onto Kademlia in 
 To add a message type: add to `MessageType`, create the `Message` subclass, write a `*Handler`, and register a `case` in `SimpleServentListener.run()`'s switch. Missing the switch entry means the message silently falls through to `NullHandler`.
 
 ### CLI — `cli.CLIParser` + `cli.command.*`
-First whitespace-delimited token is the command name; rest is the arg string. **Actually registered commands** (in `CLIParser` constructor): `info`, `pause`, `successor_info`, `dht_get`, `dht_put`, `stop`. Note the class-level Javadoc in `CLIParser` lists `ping`/`broadcast`/`causal_broadcast` etc. — those are **not registered** and not implemented; ignore that stale comment. To add a command, implement `CLICommand` and add it to the `commandList`.
+First whitespace-delimited token is the command name; rest is the arg string. **Registered commands** (in `CLIParser` constructor): `info` (prints `kademliaService.self()`), `pause`, `routing_info` (prints `routingTable()` contacts), `dht_get` (`findValue`), `dht_put` (`storeValue`), `stop` (closes the `UdpTransport`). `dht_put <key> <value>` / `dht_get <key>` use **string** keys (SHA-1 → `NodeId`) and UTF-8 byte values. These blocking commands run on the `CLIParser` thread (safe — never on the UDP receive thread). To add a command, implement `CLICommand` and add it to the `commandList`.
 
 ## Mandatory coding rules (weStream blueprint)
 

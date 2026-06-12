@@ -19,3 +19,7 @@ chord/output/*
 chord/error/*
 !chord/output/.gitkeep
 !chord/error/.gitkeep
+kademlia/output/*
+kademlia/error/*
+!kademlia/output/.gitkeep
+!kademlia/error/.gitkeep
