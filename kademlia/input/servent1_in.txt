@@ -1,2 +1,2 @@
-pause 45000
+pause 70000
 stop

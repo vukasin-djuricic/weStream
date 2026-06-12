@@ -16,3 +16,6 @@ javac -d "$OUT" $(find src test -name '*.java')
 
 echo "==> running Kademlia regression checks"
 java -cp "$OUT" core.kademlia.KademliaCheck
+
+echo "==> running Transfer regression checks"
+java -cp "$OUT" core.transfer.TransferCheck

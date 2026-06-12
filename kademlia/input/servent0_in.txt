@@ -1,5 +1,5 @@
-pause 30000
+pause 25000
+share kademlia/input/sample.bin
 routing_info
-dht_put hello world
-pause 20000
+pause 50000
 stop

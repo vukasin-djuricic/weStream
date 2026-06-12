@@ -9,9 +9,11 @@ import app.Cancellable;
 import cli.command.CLICommand;
 import cli.command.DHTGetCommand;
 import cli.command.DHTPutCommand;
+import cli.command.DownloadCommand;
 import cli.command.InfoCommand;
 import cli.command.PauseCommand;
 import cli.command.RoutingInfoCommand;
+import cli.command.ShareCommand;
 import cli.command.StopCommand;
 
 /**
@@ -25,6 +27,8 @@ import cli.command.StopCommand;
  * <li><code>routing_info</code> - prints the contacts in this node's routing table</li>
  * <li><code>dht_put [key] [value]</code> - stores a string value under a string key (storeValue)</li>
  * <li><code>dht_get [key]</code> - retrieves the value for a string key (findValue)</li>
+ * <li><code>share [path]</code> - shares a file: seeds it and announces its infohash in the DHT</li>
+ * <li><code>download [infohash] [outpath]</code> - downloads a file by infohash via the DHT</li>
  * <li><code>stop</code> - stops the node and program finishes</li>
  * </ul>
  *
@@ -45,6 +49,8 @@ public class CLIParser implements Runnable, Cancellable {
 		commandList.add(new RoutingInfoCommand());
 		commandList.add(new DHTGetCommand());
 		commandList.add(new DHTPutCommand());
+		commandList.add(new ShareCommand());
+		commandList.add(new DownloadCommand());
 		commandList.add(new StopCommand(this));
 	}
 	

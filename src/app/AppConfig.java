@@ -12,6 +12,7 @@ import core.ServentInfo;
 import core.chord.ChordState;
 import core.kademlia.KademliaService;
 import core.kademlia.UdpTransport;
+import core.transfer.TransferService;
 
 /**
  * This class contains all the global application configuration stuff.
@@ -31,6 +32,8 @@ public class AppConfig {
 	public static KademliaService kademliaService;
 	/** The UDP transport backing {@link #kademliaService}, kept so {@code stop} can close it. */
 	public static UdpTransport transport;
+	/** The transfer/streaming service (file share + download over the DHT). */
+	public static TransferService transferService;
 	/** This node's UDP listener port. */
 	public static int myPort;
 	/** True for node 0, the seed every other node bootstraps to. */

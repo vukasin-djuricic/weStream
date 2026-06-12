@@ -1,0 +1,156 @@
+package core.transfer;
+
+import java.io.Closeable;
+import java.io.IOException;
+import java.net.Socket;
+import java.nio.file.Path;
+import java.util.List;
+import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
+
+import core.kademlia.NodeId;
+
+/**
+ * Drives a download: connects to peers, exchanges bitfields, asks a
+ * {@link PiecePicker} what to fetch next, pipelines REQUESTs up to a fixed
+ * in-flight ceiling, verifies arriving PIECEs (via {@link PieceStore}, the
+ * integrity gate), announces HAVE, and completes a {@link CountDownLatch} when
+ * the file is whole. Event-driven — every bitfield/have/piece refills the
+ * pipeline — so no thread ever busy-waits (blueprint rule #4).
+ */
+public final class DownloadSession implements PeerConnection.Listener, Closeable {
+
+	private final TorrentMetadata meta;
+	private final PieceStore store;
+	private final NodeId localId;
+	private final PiecePicker picker;
+	private final int maxInFlight;
+
+	private final Set<Integer> inFlight = ConcurrentHashMap.newKeySet();
+	private final List<PeerConnection> peers = new CopyOnWriteArrayList<>();
+	private final CountDownLatch done = new CountDownLatch(1);
+
+	public DownloadSession(TorrentMetadata meta, Path outPath, NodeId localId,
+			PiecePicker picker, int maxInFlight) throws IOException {
+		this.meta = meta;
+		this.localId = localId;
+		this.picker = picker;
+		this.maxInFlight = Math.max(1, maxInFlight);
+		this.store = new PieceStore(outPath, meta);
+		if (store.isComplete()) {
+			done.countDown();
+		}
+	}
+
+	/** Open a connection to a peer's transfer socket and begin the handshake/bitfield exchange. */
+	public void addPeer(Socket socket) throws IOException {
+		PeerConnection c = new PeerConnection(socket, localId, meta.infohash(), meta.pieceCount());
+		c.setListener(this);
+		peers.add(c);
+		c.start();
+		c.sendHandshake();
+		c.sendBitfield(store.bitfield());
+	}
+
+	/** Block until the file is complete or the timeout elapses. */
+	public boolean awaitCompletion(long timeoutMs) throws InterruptedException {
+		return done.await(timeoutMs, TimeUnit.MILLISECONDS);
+	}
+
+	public boolean isComplete() {
+		return store.isComplete();
+	}
+
+	// -------------------------------------------------------- Listener callbacks
+
+	@Override
+	public void onHandshake(PeerConnection c) {
+		// nothing to do; we already sent our side in addPeer
+	}
+
+	@Override
+	public void onBitfield(PeerConnection c) {
+		picker.onPeerBitfield(c.remoteBitfield());
+		fillPipeline(c);
+	}
+
+	@Override
+	public void onHave(PeerConnection c, int index) {
+		picker.onHave(index);
+		fillPipeline(c);
+	}
+
+	@Override
+	public void onRequest(PeerConnection c, int index) {
+		// We serve pieces we already hold, so a downloader doubles as a partial seed.
+		if (index >= 0 && index < meta.pieceCount() && store.bitfield().get(index)) {
+			try {
+				c.sendPiece(index, store.readPiece(index));
+			} catch (IOException ignored) {
+				// peer will time out and re-request elsewhere
+			}
+		}
+	}
+
+	@Override
+	public void onPiece(PeerConnection c, int index, byte[] block) {
+		boolean accepted = (index >= 0 && index < meta.pieceCount()) && store.writePiece(index, block);
+		inFlight.remove(index); // re-pickable if rejected
+		if (accepted) {
+			for (PeerConnection p : peers) {
+				try {
+					p.sendHave(index);
+				} catch (IOException ignored) {
+					// best-effort gossip
+				}
+			}
+			if (store.isComplete()) {
+				done.countDown();
+			}
+		}
+		fillPipeline(c);
+	}
+
+	@Override
+	public void onClosed(PeerConnection c) {
+		peers.remove(c);
+	}
+
+	/**
+	 * Request as many pickable pieces from {@code c} as the in-flight ceiling
+	 * allows. Synchronized so concurrent reader threads keep {@code inFlight} and
+	 * the picker consistent.
+	 */
+	private synchronized void fillPipeline(PeerConnection c) {
+		Bitfield available = c.remoteBitfield();
+		if (available == null) {
+			return;
+		}
+		while (inFlight.size() < maxInFlight) {
+			int index = picker.pick(store.bitfield(), available, inFlight);
+			if (index < 0) {
+				break;
+			}
+			if (!inFlight.add(index)) {
+				continue;
+			}
+			try {
+				c.sendRequest(index);
+			} catch (IOException e) {
+				inFlight.remove(index);
+				break;
+			}
+		}
+	}
+
+	@Override
+	public void close() throws IOException {
+		for (PeerConnection c : peers) {
+			c.close();
+		}
+		store.close();
+	}
+}

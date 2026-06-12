@@ -1,0 +1,95 @@
+package core.transfer;
+
+import java.io.Closeable;
+import java.io.IOException;
+import java.io.RandomAccessFile;
+import java.nio.file.Path;
+import java.util.Arrays;
+
+/**
+ * Backs a single file's pieces on disk: writes verified pieces into a sparse
+ * output file (download side) and reads pieces for upload (seed side).
+ *
+ * <p>{@link #writePiece} is the single integrity gate — a piece whose SHA-1 does
+ * not match the metadata is rejected and never written, so the output file only
+ * ever contains verified bytes. All file access is {@code synchronized} (one
+ * seek+IO per call) so concurrent peer threads cannot interleave reads/writes.
+ */
+public final class PieceStore implements Closeable {
+
+	private final RandomAccessFile file;
+	private final TorrentMetadata meta;
+	private final Bitfield have;
+
+	/** Open {@code path} for read/write, pre-sized to the full file length. */
+	public PieceStore(Path path, TorrentMetadata meta) throws IOException {
+		this.meta = meta;
+		this.have = new Bitfield(meta.pieceCount());
+		this.file = new RandomAccessFile(path.toFile(), "rw");
+		this.file.setLength(meta.totalLength());
+	}
+
+	/**
+	 * Verify {@code data} against piece {@code index}'s hash; if it matches, write
+	 * it at the right offset and mark the bit. Returns false (and writes nothing)
+	 * if the length or hash is wrong.
+	 */
+	public synchronized boolean writePiece(int index, byte[] data) {
+		if (data.length != meta.lengthOfPiece(index)) {
+			return false;
+		}
+		if (!Arrays.equals(PieceHasher.sha1(data), meta.pieceHash(index))) {
+			return false;
+		}
+		try {
+			file.seek(meta.offsetOfPiece(index));
+			file.write(data);
+		} catch (IOException e) {
+			return false;
+		}
+		have.set(index);
+		return true;
+	}
+
+	/** Read piece {@code index}'s bytes (for upload). */
+	public synchronized byte[] readPiece(int index) throws IOException {
+		byte[] data = new byte[meta.lengthOfPiece(index)];
+		file.seek(meta.offsetOfPiece(index));
+		file.readFully(data);
+		return data;
+	}
+
+	/**
+	 * Hash-check every piece already on disk and mark the bitfield for matches.
+	 * A seed opening a complete file calls this to advertise a full bitfield;
+	 * returns the number of verified pieces.
+	 */
+	public synchronized int verifyAndMarkExisting() throws IOException {
+		for (int i = 0; i < meta.pieceCount(); i++) {
+			byte[] data = new byte[meta.lengthOfPiece(i)];
+			file.seek(meta.offsetOfPiece(i));
+			file.readFully(data);
+			if (Arrays.equals(PieceHasher.sha1(data), meta.pieceHash(i))) {
+				have.set(i);
+			}
+		}
+		return have.cardinality();
+	}
+
+	public Bitfield bitfield() {
+		return have;
+	}
+
+	public boolean isComplete() {
+		return have.isComplete();
+	}
+
+	public TorrentMetadata metadata() {
+		return meta;
+	}
+
+	@Override
+	public synchronized void close() throws IOException {
+		file.close();
+	}
+}

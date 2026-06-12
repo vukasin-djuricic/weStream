@@ -6,6 +6,7 @@ import cli.CLIParser;
 import core.kademlia.Contact;
 import core.kademlia.KademliaService;
 import core.kademlia.UdpTransport;
+import core.transfer.TransferService;
 
 /**
  * Describes the procedure for starting a single Kademlia node.
@@ -63,6 +64,10 @@ public class ServentMain {
 		}
 
 		AppConfig.timestampedStandardPrint("Starting Kademlia node " + kademlia.self());
+
+		// The transfer/streaming service shares files over TCP and announces them in the DHT.
+		// Each shared file opens its own ephemeral TCP server (the port travels in the DHT value).
+		AppConfig.transferService = new TransferService(kademlia);
 
 		// The CLI thread reads commands (stdin, redirected to a per-node input file by the starter).
 		Thread cliThread = new Thread(new CLIParser());

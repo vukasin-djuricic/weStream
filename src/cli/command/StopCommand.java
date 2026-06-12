@@ -25,6 +25,9 @@ public class StopCommand implements CLICommand {
 	public void execute(String args) {
 		AppConfig.timestampedStandardPrint("Stopping...");
 		parser.stop();
+		if (AppConfig.transferService != null) {
+			AppConfig.transferService.close();
+		}
 		AppConfig.transport.close();
 	}
 
