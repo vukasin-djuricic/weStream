@@ -2,6 +2,10 @@
 out/
 *.class
 
+# Gradle (wrapper jar/scripts ARE committed; build state is not)
+.gradle/
+build/
+
 # IntelliJ IDEA (project files are regenerable; source is the source of truth)
 .idea/
 *.iml

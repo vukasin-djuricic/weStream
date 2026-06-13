@@ -3,18 +3,18 @@ package app;
 import java.net.SocketException;
 
 import cli.CLIParser;
-import core.kademlia.Contact;
-import core.kademlia.KademliaService;
-import core.kademlia.UdpTransport;
-import core.transfer.TransferService;
 
 /**
- * Describes the procedure for starting a single Kademlia node.
+ * Describes the procedure for starting a single Kademlia node, <em>headless</em>
+ * (CLI front-end). Node 0 is the <em>seed</em>: it just starts listening. Every
+ * other node bootstraps to the seed's UDP endpoint to join the network. (This
+ * replaces the legacy Chord boot path — listener + initializer + bootstrap
+ * server — which still compiles but is no longer started.)
  *
- * <p>Node 0 is the <em>seed</em>: it just starts listening. Every other node
- * bootstraps to the seed's UDP endpoint to join the network. (This replaces the
- * legacy Chord boot path — listener + initializer + bootstrap server — which
- * still compiles but is no longer started.)
+ * <p>The node stack itself lives in {@link NodeRuntime}; this entry point only
+ * adds config parsing and the stdin CLI loop. The Phase-5 JavaFX window is the
+ * other front-end over the same {@link NodeRuntime}, so the two never duplicate
+ * boot logic and the headless path stays pure-JDK for {@code ./check.sh}.
  *
  * @author bmilojkovic
  */
@@ -48,43 +48,30 @@ public class ServentMain {
 			System.exit(0);
 		}
 
-		// Build the transport + service exactly as the regression suite does
-		// (UdpTransport -> KademliaService -> start).
-		KademliaService kademlia = null;
+		// Build the node stack (UdpTransport -> KademliaService -> TransferService),
+		// exactly as the regression suite does, via the shared NodeRuntime.
+		NodeRuntime runtime = null;
 		try {
-			UdpTransport transport = new UdpTransport(AppConfig.myPort);
-			kademlia = new KademliaService("127.0.0.1", AppConfig.myPort, transport);
-			kademlia.start();
-
-			AppConfig.transport = transport;
-			AppConfig.kademliaService = kademlia;
+			runtime = new NodeRuntime("127.0.0.1", AppConfig.myPort,
+					AppConfig.isSeedNode, AppConfig.SEED_HOST, AppConfig.SEED_PORT);
 		} catch (SocketException e) {
 			AppConfig.timestampedErrorPrint("Couldn't bind UDP port " + AppConfig.myPort + ". Exiting...");
 			System.exit(0);
 		}
 
-		AppConfig.timestampedStandardPrint("Starting Kademlia node " + kademlia.self());
+		// Publish the runtime's parts on AppConfig so the CLI commands (and the
+		// legacy static-singleton idiom) can reach them.
+		AppConfig.transport = runtime.transport();
+		AppConfig.kademliaService = runtime.kademlia();
+		AppConfig.transferService = runtime.transferService();
 
-		// The transfer/streaming service shares files over TCP and announces them in the DHT.
-		// Each shared file opens its own ephemeral TCP server (the port travels in the DHT value).
-		AppConfig.transferService = new TransferService(kademlia);
+		AppConfig.timestampedStandardPrint("Starting Kademlia node " + runtime.kademlia().self());
 
 		// The CLI thread reads commands (stdin, redirected to a per-node input file by the starter).
 		Thread cliThread = new Thread(new CLIParser());
 		cliThread.start();
 
-		// Join the network. Bootstrap is a BLOCKING call (it waits on RPC futures
-		// completed by the UDP receive thread), so it must run on its own
-		// application thread — never inline here, never on the receive thread.
-		// Node 0 is the seed: it has nobody to bootstrap to, it just listens.
-		if (!AppConfig.isSeedNode) {
-			Contact seed = new Contact(AppConfig.SEED_HOST, AppConfig.SEED_PORT);
-			new Thread(() -> {
-				AppConfig.timestampedStandardPrint("Bootstrapping via seed " + seed);
-				AppConfig.kademliaService.bootstrap(seed);
-				AppConfig.timestampedStandardPrint("Bootstrap complete, routing table size "
-						+ AppConfig.kademliaService.routingTable().size());
-			}, "kad-bootstrap").start();
-		}
+		// Join the network (off-thread; no-op for the seed). See NodeRuntime#joinNetwork.
+		runtime.joinNetwork();
 	}
 }

@@ -64,6 +64,51 @@ public final class DownloadSession implements PeerConnection.Listener, Closeable
 		return store.isComplete();
 	}
 
+	/** Number of connected peers (diagnostics/UI). */
+	public int peerCount() {
+		return peers.size();
+	}
+
+	/**
+	 * A point-in-time download snapshot for the Phase-5 UI (swarm rail, scrubber,
+	 * sliding-window strip). Pure data — reading it never touches the network.
+	 */
+	public Progress progress() {
+		int total = meta.pieceCount();
+		Bitfield bits = store.bitfield();
+		byte[] pieceStates = new byte[total];
+		int inFlightCount = 0;
+		for (int i = 0; i < total; i++) {
+			if (bits.get(i)) {
+				pieceStates[i] = HAVE;
+			} else if (inFlight.contains(i)) {
+				pieceStates[i] = IN_FLIGHT;
+				inFlightCount++;
+			} else {
+				pieceStates[i] = MISSING;
+			}
+		}
+		return new Progress(bits.cardinality(), inFlightCount, total, peers.size(), pieceStates);
+	}
+
+	/** Per-piece state byte in {@link Progress#pieceStates}: not yet requested. */
+	public static final byte MISSING = 0;
+	/** Per-piece state byte: requested, awaiting the PIECE reply. */
+	public static final byte IN_FLIGHT = 1;
+	/** Per-piece state byte: held and verified. */
+	public static final byte HAVE = 2;
+
+	/**
+	 * Immutable download snapshot. {@code pieceStates[i]} is one of
+	 * {@link #MISSING}/{@link #IN_FLIGHT}/{@link #HAVE} — the exact input the
+	 * sliding-window strip renders.
+	 */
+	public record Progress(int have, int inFlight, int total, int peers, byte[] pieceStates) {
+		public double fraction() {
+			return total == 0 ? 1.0 : (double) have / total;
+		}
+	}
+
 	// -------------------------------------------------------- Listener callbacks
 
 	@Override

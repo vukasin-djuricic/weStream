@@ -1,0 +1,7 @@
+// weStream — Gradle build (Phase 5 onward).
+//
+// Gradle is BUILD TOOLING ONLY. It pulls JavaFX (and later vlcj/libVLC) and will
+// drive jpackage/jlink. It does NOT relax the pure-JDK rule on core.kademlia /
+// core.transfer — that rule is import-level and still enforced by ./check.sh,
+// which compiles src/ + test/ with plain javac and no third-party jars.
+rootProject.name = 'weStream'

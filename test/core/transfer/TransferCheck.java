@@ -225,6 +225,19 @@ public class TransferCheck {
 			check("output byte-identical to source", Arrays.equals(Files.readAllBytes(out), content));
 			check("output infohash matches source",
 					PieceHasher.fromFile(out, pieceSize).infohash().equals(meta.infohash()));
+
+			// progress() — the Phase-5 UI snapshot. On a completed download every piece
+			// must read HAVE, fraction()==1, and pieceStates length must equal pieceCount.
+			DownloadSession.Progress p = dl.progress();
+			check("progress() reports complete", p.have() == meta.pieceCount() && p.fraction() == 1.0);
+			check("progress() pieceStates sized to pieceCount", p.pieceStates().length == meta.pieceCount());
+			boolean allHave = true;
+			for (byte st : p.pieceStates()) {
+				if (st != DownloadSession.HAVE) {
+					allHave = false;
+				}
+			}
+			check("progress() all pieces marked HAVE", allHave);
 		} finally {
 			if (dl != null) {
 				dl.close();

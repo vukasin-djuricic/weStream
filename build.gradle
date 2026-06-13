@@ -1,0 +1,59 @@
+// weStream — Phase 5 JavaFX player UI.
+//
+// Source layout note: this is NOT the Gradle default (src/main/java). We keep the
+// existing flat repo layout so ./check.sh and the IntelliJ project keep working:
+//   - engine + app  -> src/   (pure JDK; check.sh compiles it with plain javac)
+//   - JavaFX UI      -> ui/    (may use JavaFX/modern libs; compiled only here)
+//   - resources      -> resources/ (theme.css, fonts, FXML)
+// The pure-JDK rule on core.* is import-level: nothing under core.kademlia /
+// core.transfer imports outside java.*, so the same src/ compiles both ways.
+
+plugins {
+    id 'application'
+    id 'org.openjfx.javafxplugin' version '0.1.0'
+}
+
+repositories {
+    mavenCentral()
+}
+
+java {
+    toolchain {
+        // LTS — most battle-tested with JavaFX + vlcj + jpackage. Independent of the
+        // machine's default JDK (Corretto 25); Gradle locates the installed Temurin 21.
+        languageVersion = JavaLanguageVersion.of(21)
+    }
+}
+
+javafx {
+    version = '21.0.5'
+    // Video (javafx.media is intentionally NOT used — weak codecs; vlcj/libVLC lands
+    // in the next increment for real playback). Just the UI modules for now.
+    modules = ['javafx.controls', 'javafx.fxml', 'javafx.graphics']
+}
+
+sourceSets {
+    main {
+        java {
+            srcDirs = ['src', 'ui']
+        }
+        resources {
+            srcDirs = ['resources']
+        }
+    }
+    // test/ is the hand-rolled regression suite (main-method runners, no JUnit) and
+    // is driven by ./check.sh, not Gradle. Deliberately not wired as a Gradle test set.
+}
+
+application {
+    mainClass = 'ui.WeStreamApp'
+}
+
+// Launch one node's window:  ./gradlew run --args="<port> [seed]"
+// e.g.  ./gradlew run --args="1100 seed"   (the seed)
+//       ./gradlew run --args="1200"        (joins via the seed on 1100)
+run {
+    if (project.hasProperty('appArgs')) {
+        args(project.property('appArgs').toString().split('\\s+'))
+    }
+}

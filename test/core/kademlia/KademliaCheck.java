@@ -85,6 +85,13 @@ public class KademliaCheck {
 		}
 		check("contacts stored", rt.size() == ports.length);
 
+		// bucketSizes() (diagnostics view feeding the Phase-5 DHT inspector):
+		// one slot per id bit, and the per-bucket counts must sum to the table size.
+		int[] sizes = rt.bucketSizes();
+		check("bucketSizes length == ID_BITS", sizes.length == NodeId.ID_BITS);
+		check("bucketSizes sums to table size",
+				java.util.Arrays.stream(sizes).sum() == rt.size());
+
 		List<Contact> closest = rt.findClosest(b, 3);
 		check("findClosest bounded", closest.size() == 3);
 		check("findClosest nearest first", closest.get(0).getId().equals(b));
@@ -248,6 +255,11 @@ public class KademliaCheck {
 			nodes.get(1).storeValue(key, "chunk".getBytes(StandardCharsets.UTF_8));
 			byte[] got = nodes.get(4).findValue(key);
 			check("findValue across network", got != null && new String(got, StandardCharsets.UTF_8).equals("chunk"));
+
+			// storedKeyCount()/storedKeys() — the inspector's "stored keys" panel.
+			// The originator keeps a local copy, so its key set must include this key.
+			check("storedKeyCount reflects local store", nodes.get(1).storedKeyCount() >= 1);
+			check("storedKeys contains the stored key", nodes.get(1).storedKeys().contains(key));
 			check("missing key returns null",
 					nodes.get(4).findValue(NodeId.fromBytes("nope".getBytes(StandardCharsets.UTF_8))) == null);
 		} finally {

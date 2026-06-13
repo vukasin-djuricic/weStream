@@ -70,6 +70,16 @@ public class KademliaService {
 		return routingTable;
 	}
 
+	/** Number of key/value pairs currently held in the local DHT store (diagnostics/UI). */
+	public int storedKeyCount() {
+		return store.size();
+	}
+
+	/** Snapshot of the keys currently stored locally (diagnostics/UI; drives the DHT inspector). */
+	public List<NodeId> storedKeys() {
+		return new ArrayList<>(store.keySet());
+	}
+
 	// ----------------------------------------------------------------- inbound
 
 	private void onRaw(Contact wireSource, byte[] data) {

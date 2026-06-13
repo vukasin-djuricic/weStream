@@ -71,6 +71,19 @@ public class RoutingTable {
 		return all.size() > count ? new ArrayList<>(all.subList(0, count)) : all;
 	}
 
+	/**
+	 * Per-bucket occupancy snapshot, indexed by bucket index
+	 * {@code 0..NodeId.ID_BITS-1}. Read-only diagnostics view (drives the Phase-5
+	 * DHT-inspector k-bucket bars); does not expose or mutate the buckets.
+	 */
+	public int[] bucketSizes() {
+		int[] sizes = new int[buckets.length];
+		for (int i = 0; i < buckets.length; i++) {
+			sizes[i] = buckets[i].size();
+		}
+		return sizes;
+	}
+
 	/** Flat snapshot of every contact currently in the table. */
 	public List<Contact> allContacts() {
 		List<Contact> all = new ArrayList<>();
