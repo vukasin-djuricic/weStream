@@ -12,6 +12,9 @@ out/
 # Generated repo digest (gitingest dump)
 digest.txt
 
+# Raw design export (redundant with the unzipped design_handoff_phase5_player/)
+Faza 5 UI Dizajn.zip
+
 # Runtime simulation logs (regenerated on every run).
 # The directories themselves are kept via .gitkeep because
 # MultipleServentStarter redirects each node's output/error into them.

@@ -1,0 +1,153 @@
+/* ============================================================
+   weStream — Phase 5 Player · JavaFX theme (Direction A: Midnight Neon)
+   Attach to the Scene:  scene.getStylesheets().add(getClass().getResource("/theme.css").toExternalForm());
+   JavaFX CSS != web CSS:
+     - every property is prefixed -fx-
+     - there is NO flexbox/grid in CSS; do layout with HBox/VBox/GridPane in FXML/code
+     - spacing/gaps are set on the layout pane (e.g. HBox spacing="10"), not in CSS
+     - "looked-up colors" below work like CSS variables
+     - gl#s/shadows: use -fx-effect: dropshadow(...) or a DropShadow effect in code
+   ============================================================ */
+
+.root {
+    /* ---- surfaces ---- */
+    -color-bg-app:      #0f0d15;  /* window background           */
+    -color-bg-chrome:   #141019;  /* title bar / sidebar         */
+    -color-bg-panel:    #131019;  /* right rails, deep panels    */
+    -color-surface:     #15111d;  /* cards, tiles, rows          */
+    -color-surface-2:   #1a1623;  /* raised / footer card        */
+    -color-surface-in:  #100d17;  /* inset (inputs, graph well)  */
+    -color-hover:       #1d1826;  /* nav/list hover              */
+
+    /* ---- borders ---- */
+    -color-border:        #221d2c;
+    -color-border-soft:   #1c1826;
+    -color-border-strong: #2c2638;
+    -color-border-violet: #34284a;
+
+    /* ---- text ---- */
+    -color-text-hi:   #f4f1f8;
+    -color-text:      #e7e1ef;
+    -color-text-mid:  #b3aac0;
+    -color-text-soft: #8b8299;
+    -color-text-lo:   #756c85;
+    -color-text-dim:  #5f5670;
+
+    /* ---- brand + accents ---- */
+    -color-accent:        #c64ff0;  /* magenta-purple, PRIMARY     */
+    -color-accent-deep:   #9b3ec9;  /* gradient end                */
+    -color-accent-soft:   #c08fe8;  /* accent text on dark         */
+    -color-cyan:          #6cc8e8;  /* DOWNLOAD direction          */
+    -color-pink:          #ee7fb0;  /* UPLOAD direction            */
+    -color-green:         #46d39a;  /* seeding / healthy / live    */
+    -color-green-text:    #74e3b0;
+    -color-amber:         #f4bf4f;  /* warning                     */
+    -color-red:           #f0795e;  /* error / timeout             */
+
+    /* tinted accent fills (use as -fx-background-color) */
+    -fill-accent-12:  rgba(198,79,240,0.13);
+    -fill-green-10:   rgba(70,211,154,0.10);
+
+    /* ---- type ---- */
+    -fx-font-family: "Manrope";              /* load TTF at startup, see README */
+    -fx-font-size: 13px;
+    -fx-background-color: -color-bg-app;
+}
+
+/* monospace utility — apply to all engine data (ids, speeds, hashes, k-buckets) */
+.mono { -fx-font-family: "JetBrains Mono"; }
+
+/* ---------- typography helpers ---------- */
+.h1        { -fx-font-size: 22px; -fx-font-weight: bold; -fx-text-fill: -color-text-hi; }
+.h2        { -fx-font-size: 14px; -fx-font-weight: bold; -fx-text-fill: -color-text-hi; }
+.subtitle  { -fx-font-size: 13px; -fx-text-fill: -color-text-soft; }
+.label-cap { -fx-font-family: "JetBrains Mono"; -fx-font-size: 10.5px; -fx-text-fill: -color-text-lo; }
+.stat-num  { -fx-font-size: 26px; -fx-font-weight: bold; -fx-text-fill: -color-text-hi; }
+
+/* ---------- card ---------- */
+.ws-card {
+    -fx-background-color: -color-surface;
+    -fx-background-radius: 14px;
+    -fx-border-color: -color-border;
+    -fx-border-radius: 14px;
+    -fx-border-width: 1px;
+}
+
+/* ---------- pill / badge ---------- */
+.pill {
+    -fx-background-radius: 999px;
+    -fx-border-radius: 999px;
+    -fx-padding: 5px 11px;
+    -fx-font-family: "JetBrains Mono";
+    -fx-font-size: 11.5px;
+}
+.pill-green {
+    -fx-background-color: -fill-green-10;
+    -fx-border-color: rgba(70,211,154,0.28);
+    -fx-border-width: 1px;
+    -fx-text-fill: -color-green-text;
+}
+.pill-accent {
+    -fx-background-color: -fill-accent-12;
+    -fx-text-fill: -color-accent;
+}
+
+/* ---------- primary button (magenta gradient) ---------- */
+.btn-primary {
+    -fx-background-color: linear-gradient(to bottom right, -color-accent, -color-accent-deep);
+    -fx-background-radius: 12px;
+    -fx-text-fill: white;
+    -fx-font-weight: bold;
+    -fx-font-size: 13px;
+    -fx-padding: 11px 18px;
+    -fx-cursor: hand;
+}
+.btn-primary:hover { -fx-opacity: 0.92; }
+
+.btn-ghost {
+    -fx-background-color: -color-surface-2;
+    -fx-background-radius: 11px;
+    -fx-border-color: -color-border-strong;
+    -fx-border-radius: 11px;
+    -fx-border-width: 1px;
+    -fx-text-fill: -color-text-mid;
+    -fx-font-weight: bold;
+    -fx-font-size: 12.5px;
+    -fx-padding: 9px 14px;
+    -fx-cursor: hand;
+}
+.btn-ghost:hover { -fx-background-color: #252031; }
+
+/* ---------- sidebar nav item ---------- */
+.nav-item {
+    -fx-background-color: transparent;
+    -fx-background-radius: 11px;
+    -fx-text-fill: #c7bfd6;
+    -fx-font-size: 13.5px;
+    -fx-font-weight: bold;
+    -fx-padding: 11px 13px;
+    -fx-cursor: hand;
+}
+.nav-item:hover  { -fx-background-color: -color-hover; }
+.nav-item.active {
+    -fx-background-color: -fill-accent-12;
+    -fx-border-color: -color-accent transparent transparent transparent; /* fake the 3px left bar with a real Region if you prefer */
+}
+
+/* ---------- swarm graph node (Circle/StackPane) ---------- */
+.peer-node {
+    -fx-background-color: #181320;
+    -fx-background-radius: 999px;
+    -fx-border-radius: 999px;
+    -fx-border-width: 2px;
+    -fx-font-family: "JetBrains Mono";
+    -fx-font-weight: bold;
+}
+.you-node {
+    -fx-background-color: linear-gradient(to bottom right, -color-accent, #7c2fd0);
+    -fx-background-radius: 999px;
+    -fx-text-fill: white;
+    -fx-font-weight: bold;
+    /* glow: */
+    -fx-effect: dropshadow(gaussian, rgba(198,79,240,0.55), 30, 0.2, 0, 0);
+}
