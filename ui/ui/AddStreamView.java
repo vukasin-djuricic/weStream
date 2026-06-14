@@ -147,7 +147,7 @@ final class AddStreamView {
 	private Region fact(String cap, String value) {
 		Label v = Ui.mono(value, Ui.TEXT_HI, 14);
 		v.setStyle("-fx-font-size: 14px; -fx-font-weight: 800;");
-		return new VBox(2, v, Ui.cap(cap));
+		return new VBox(2, Ui.cap(cap), v); // caption above value, per the reference
 	}
 
 	private Region divider() {

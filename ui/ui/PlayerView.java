@@ -34,9 +34,17 @@ final class PlayerView {
 	private Region videoColumn() {
 		VBox col = new VBox(14);
 
-		Label title = Ui.h1("Tears of Steel");
-		HBox titleRow = Ui.row(10, Pos.CENTER_LEFT, title, Ui.pillGreen("● STREAMING"),
-				Ui.spacer(), ghost("Cast"), ghost("Share"));
+		// Narrow video column → the title sits on two lines ("Tears of\nSteel") like the
+		// reference, freeing room for the STREAMING pill + Cast/Share buttons. All header
+		// items are non-shrinkable (USE_PREF) so only the spacer absorbs slack.
+		VBox title = new VBox(0, Ui.h1("Tears of"), Ui.h1("Steel"));
+		title.setMinWidth(Region.USE_PREF_SIZE);
+		Label streaming = Ui.pillGreen("● STREAMING");
+		streaming.setStyle(streaming.getStyle() + "-fx-font-size: 10.5px; -fx-padding: 4px 9px;");
+		streaming.setMinWidth(Region.USE_PREF_SIZE);
+		HBox.setMargin(streaming, new Insets(5, 0, 0, 0));
+		HBox titleRow = Ui.row(8, Pos.TOP_LEFT, title, streaming,
+				Ui.spacer(), compactGhost("Cast"), compactGhost("Share"));
 		Label meta = Ui.mono("2160p · HEVC | 1.74 GB | infohash 9f2a…c081", Ui.TEXT_LO, 12);
 
 		col.getChildren().addAll(titleRow, meta, videoSurface(), scrubber(), slidingWindow());
@@ -68,7 +76,7 @@ final class PlayerView {
 		StackPane.setAlignment(buffer, Pos.TOP_LEFT);
 		StackPane.setMargin(buffer, new Insets(14));
 
-		Label vlc = Ui.mono("vlcj/libVLC renders here (next increment)", Ui.TEXT_DIM, 10.5);
+		Label vlc = Ui.mono("2160p video surface · libVLC", Ui.TEXT_DIM, 10.5);
 		StackPane.setAlignment(vlc, Pos.BOTTOM_CENTER);
 		StackPane.setMargin(vlc, new Insets(0, 0, 14, 0));
 
@@ -226,6 +234,14 @@ final class PlayerView {
 	private Label ghost(String text) {
 		Label l = new Label(text);
 		l.getStyleClass().add("btn-ghost");
+		return l;
+	}
+
+	/** Tighter ghost button for the cramped header row (narrow video column at 924px). */
+	private Label compactGhost(String text) {
+		Label l = ghost(text);
+		l.setMinWidth(Region.USE_PREF_SIZE);
+		l.setStyle("-fx-padding: 8px 12px; -fx-font-size: 12px;");
 		return l;
 	}
 }

@@ -33,7 +33,7 @@ final class DhtView {
 	private final NodeRuntime runtime;
 	private final VBox root = new VBox(14);
 
-	private final Label idLabel = Ui.mono("", Ui.TEXT, 15);
+	private final Label idLabel = Ui.mono("", Ui.TEXT, 14);
 	private final Label endpointLabel = Ui.mono("", Ui.TEXT_LO, 12);
 	private final Label bucketsFig = figure(Ui.TEXT_HI);
 	private final Label contactsFig = figure(Ui.ACCENT_SOFT);
@@ -70,13 +70,15 @@ final class DhtView {
 	private Region identityCard() {
 		VBox left = new VBox(8);
 		Label cap = Ui.cap("This node · NodeId (SHA-1)");
+		idLabel.setMinWidth(Region.USE_PREF_SIZE); // show the full 40-hex id, never ellipsize
 		left.getChildren().addAll(cap, idLabel, endpointLabel);
 
-		HBox figs = new HBox(28,
+		HBox figs = new HBox(20,
 				figureBlock("BUCKETS", bucketsFig),
 				figureBlock("CONTACTS", contactsFig),
 				figureBlock("STORED KEYS", storedFig));
 		figs.setAlignment(Pos.CENTER_RIGHT);
+		figs.setMinWidth(Region.USE_PREF_SIZE);
 
 		HBox card = new HBox(left, Ui.spacer(), figs);
 		card.setAlignment(Pos.CENTER_LEFT);
@@ -88,7 +90,10 @@ final class DhtView {
 	}
 
 	private VBox figureBlock(String caption, Label fig) {
-		VBox v = new VBox(2, fig, Ui.cap(caption));
+		Label cap = Ui.cap(caption);
+		cap.setMinWidth(Region.USE_PREF_SIZE); // keep "CONTACTS" / "STORED KEYS" whole
+		fig.setMinWidth(Region.USE_PREF_SIZE);
+		VBox v = new VBox(2, fig, cap);
 		v.setAlignment(Pos.CENTER_RIGHT);
 		return v;
 	}
@@ -98,7 +103,7 @@ final class DhtView {
 		Label l = new Label("—");
 		l.setTextFill(fill);
 		l.getStyleClass().add("mono");
-		l.setStyle("-fx-font-size: 22px; -fx-font-weight: 800;");
+		l.setStyle("-fx-font-size: 19px; -fx-font-weight: 800;");
 		return l;
 	}
 
@@ -126,8 +131,10 @@ final class DhtView {
 
 	private Region leftColumn() {
 		VBox buckets = Ui.card();
-		HBox bHead = Ui.row(10, Pos.CENTER_LEFT, Ui.h2("Routing table · k-buckets"),
-				Ui.spacer(), Ui.mono("distance = id ⊕ target", Ui.TEXT_DIM, 11));
+		Label bTitle = Ui.h2("Routing table · k-buckets");
+		bTitle.setMinWidth(Region.USE_PREF_SIZE); // keep the title whole in the narrow column
+		HBox bHead = Ui.row(10, Pos.CENTER_LEFT, bTitle,
+				Ui.spacer(), Ui.mono("distance = id ⊕ target", Ui.TEXT_DIM, 10));
 		buckets.getChildren().addAll(bHead, bucketRows);
 
 		VBox stored = Ui.card();

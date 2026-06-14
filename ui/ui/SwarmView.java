@@ -45,6 +45,7 @@ final class SwarmView {
 
 	private final NodeRuntime runtime;
 	private final VBox root = new VBox(14);
+	private final ScrollPane scroller = new ScrollPane(root);
 
 	private final Label connectedNumber = bigNumber("—", Ui.TEXT_HI);
 	private final SwarmGraph graph;
@@ -55,8 +56,16 @@ final class SwarmView {
 		this.graph = new SwarmGraph();
 
 		Region well = graphWell();
-		VBox.setVgrow(well, Priority.ALWAYS); // the well absorbs leftover height (no global scroll)
 		root.getChildren().addAll(header(), statCards(), well, peerTable());
+
+		// The hero well is tall (the design's 540px graph), so the page is taller than
+		// the viewport and scrolls — matching the reference (02_swarm = top, 02b = the
+		// peer table scrolled into view). Bar hidden to match the screenshots; the
+		// content still scrolls via wheel/trackpad.
+		scroller.setFitToWidth(true);
+		scroller.setHbarPolicy(ScrollPane.ScrollBarPolicy.NEVER);
+		scroller.setVbarPolicy(ScrollPane.ScrollBarPolicy.NEVER);
+		scroller.setStyle("-fx-background: transparent; -fx-background-color: transparent;");
 
 		refresh();
 		Timeline ticker = new Timeline(new KeyFrame(Duration.seconds(2), e -> refresh()));
@@ -65,7 +74,7 @@ final class SwarmView {
 	}
 
 	Node getRoot() {
-		return root;
+		return scroller;
 	}
 
 	private Region header() {
@@ -96,7 +105,7 @@ final class SwarmView {
 			g.getColumnConstraints().add(c);
 		}
 		g.add(statCard("CONNECTED PEERS", connectedNumber, null), 0, 0);
-		g.add(statCard("SWARM HEALTH", bigNumber("Excellent", Ui.GREEN), null), 1, 0);
+		g.add(statCard("SWARM HEALTH", healthValue("Excellent", Ui.GREEN), null), 1, 0);
 		g.add(statCard("DOWNLOAD", bigNumber("11.4", Ui.CYAN), "MB/s"), 2, 0);
 		g.add(statCard("UPLOAD", bigNumber("3.2", Ui.PINK), "MB/s"), 3, 0);
 		g.add(statCard("SHARE RATIO", bigNumber("1.84", Ui.TEXT_HI), null), 4, 0);
@@ -104,18 +113,36 @@ final class SwarmView {
 	}
 
 	private Region statCard(String caption, Label number, String unit) {
-		HBox value = new HBox(6, number);
-		value.setAlignment(Pos.BOTTOM_LEFT);
+		// Caption on top (caps, wraps to 2 lines like "CONNECTED PEERS"), big number
+		// below, optional unit ("MB/s") on its own line under the number.
+		Label cap = Ui.cap(caption);
+		cap.setWrapText(true);
+		cap.setMinHeight(28); // reserve two lines so single- and double-line captions align
+
+		VBox v = Ui.card();
+		v.setSpacing(6);
+		v.setPadding(new Insets(16));
+		v.setMinWidth(0); // let the GridPane column govern width; clip rather than push
+		v.getChildren().addAll(cap, number);
 		if (unit != null) {
 			Label u = new Label(unit);
 			u.setTextFill(Ui.TEXT_LO);
-			u.setStyle("-fx-font-size: 13px; -fx-font-weight: 600;");
-			value.getChildren().add(u);
+			u.setStyle("-fx-font-size: 12px; -fx-font-weight: 600;");
+			v.getChildren().add(u);
 		}
-		VBox v = Ui.card();
-		v.setSpacing(8);
-		v.getChildren().addAll(value, Ui.cap(caption));
 		return v;
+	}
+
+	/**
+	 * Word-valued stat (SWARM HEALTH "Excellent") — Manrope (proportional), not the
+	 * mono used for numbers, so a long word fits the narrow card without truncating.
+	 */
+	private static Label healthValue(String text, Color fill) {
+		Label l = new Label(text);
+		l.setTextFill(fill);
+		l.setStyle("-fx-font-size: 20px; -fx-font-weight: 800;");
+		l.setMinWidth(Region.USE_PREF_SIZE); // render in full rather than ellipsize
+		return l;
 	}
 
 	/** Big stat number — JetBrains Mono 26/800 (metric values use mono per DESIGN_TOKENS). */
@@ -131,8 +158,8 @@ final class SwarmView {
 
 	private Region graphWell() {
 		StackPane well = new StackPane(graph);
-		well.setMinHeight(280);   // can shrink on short windows…
-		well.setPrefHeight(460);  // …but prefers a generous hero size (grows via VGrow)
+		well.setMinHeight(540);   // the design's tall hero well — YOU sits at its centre
+		well.setPrefHeight(540);
 		// base panel fill + a prominent deep-purple radial glow layered on top
 		well.setStyle("-fx-background-color: #131019,"
 				+ " radial-gradient(center 50% 48%, radius 65%, rgba(198,79,240,0.16), rgba(198,79,240,0.04) 55%, transparent 72%);"

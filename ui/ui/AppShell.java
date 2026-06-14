@@ -54,6 +54,16 @@ final class AppShell {
 		return root;
 	}
 
+	/** Select a screen by its nav display name (used by the snapshot harness). */
+	void showScreen(String name) {
+		for (NavItem item : navItems) {
+			if (item.name.equals(name)) {
+				select(item);
+				return;
+			}
+		}
+	}
+
 	// --------------------------------------------------------------- title bar
 
 	private Region titleBar(NodeRuntime runtime, Stage stage) {
@@ -169,6 +179,7 @@ final class AppShell {
 		VBox bar = new VBox(2);
 		bar.setPrefWidth(230);
 		bar.setMinWidth(230);
+		bar.setMaxHeight(Double.MAX_VALUE); // fill the body row height so vspacer pins the footer to the bottom
 		bar.setBackground(Ui.fill(Ui.BG_CHROME, 0));
 		bar.setPadding(new Insets(16, 14, 16, 14));
 
@@ -243,6 +254,10 @@ final class AppShell {
 		if (view instanceof Region r) {
 			r.setMaxWidth(Double.MAX_VALUE);
 			r.setMaxHeight(Double.MAX_VALUE);
+			// Don't let an (even invisible) tall screen inflate the StackPane's min
+			// height — that would push the body row past the window and drop the
+			// sidebar footer off the bottom. Screens scroll/clip instead.
+			r.setMinHeight(0);
 		}
 		content.getChildren().add(view);
 	}

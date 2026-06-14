@@ -29,7 +29,7 @@ javafx {
     version = '21.0.5'
     // Video (javafx.media is intentionally NOT used — weak codecs; vlcj/libVLC lands
     // in the next increment for real playback). Just the UI modules for now.
-    modules = ['javafx.controls', 'javafx.fxml', 'javafx.graphics']
+    modules = ['javafx.controls', 'javafx.fxml', 'javafx.graphics', 'javafx.swing']
 }
 
 sourceSets {
@@ -55,5 +55,27 @@ application {
 run {
     if (project.hasProperty('appArgs')) {
         args(project.property('appArgs').toString().split('\\s+'))
+    }
+    // Headless visual-compare harness (dev only): render a screen offscreen to a PNG
+    // via the Monocle/software pipeline, so it works with no attached display. We
+    // reuse the `run` task (so the openjfx plugin's JavaFX module path applies) and
+    // just retarget the main class + add the Monocle JVM flags.
+    //   ./gradlew run -Psnap -PsnapArgs="Swarm build/snap_swarm.png"
+    if (project.hasProperty('snap')) {
+        mainClass = 'ui.SnapTool'
+        // -PsnapMonocle forces the offscreen Monocle/software pipeline (needs the
+        // Monocle classes on the path); without it we use the default platform glass
+        // (works when a real display/GUI session is attached).
+        if (project.hasProperty('snapMonocle')) {
+            jvmArgs(
+                '-Dglass.platform=Monocle',
+                '-Dmonocle.platform=Headless',
+                '-Dprism.order=sw',
+                '-Djava.awt.headless=true'
+            )
+        }
+        if (project.hasProperty('snapArgs')) {
+            setArgs(project.property('snapArgs').toString().split('\\s+').toList())
+        }
     }
 }
