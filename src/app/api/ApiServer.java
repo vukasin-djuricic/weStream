@@ -25,6 +25,7 @@ import core.kademlia.KademliaService;
 import core.kademlia.NodeId;
 import core.kademlia.RoutingTable;
 import core.transfer.DownloadSession;
+import core.transfer.PieceStore;
 import core.transfer.TorrentMetadata;
 import core.transfer.TransferService;
 
@@ -39,9 +40,10 @@ import core.transfer.TransferService;
  * (JDK module {@code jdk.httpserver}) + {@code java.*}, so {@code ./check.sh}'s
  * plain {@code javac src test} compiles it with no extra classpath.
  *
- * <p><b>Threading:</b> handlers run on this server's own bounded pool, never on
- * the Kademlia UDP receive thread — so once later increments add endpoints that
- * call blocking RPCs ({@code findValue}/{@code download}), they will not deadlock
+ * <p><b>Threading:</b> handlers run on this server's own pool (a cached pool, so a
+ * long-lived {@code /stream} response cannot starve short polling requests like
+ * {@code /api/progress}), never on the Kademlia UDP receive thread — so the
+ * blocking RPC endpoints ({@code findValue}/{@code download}) cannot deadlock
  * (see {@link KademliaService} threading notes).
  *
  * <p>Increment 1 exposes two read-only endpoints: {@code GET /api/status} and
@@ -50,9 +52,10 @@ import core.transfer.TransferService;
  */
 public final class ApiServer implements Closeable {
 
-	private static final int HANDLER_THREADS = 4;
 	/** Cap on a request body we will read (the DHT put body is tiny; reject anything large). */
 	private static final int MAX_BODY_BYTES = 64 * 1024;
+	/** How long the streamer waits for one not-yet-downloaded piece before giving up. */
+	private static final long STREAM_PIECE_TIMEOUT_MS = 30_000;
 
 	private final HttpServer server;
 	private final ExecutorService executor;
@@ -78,7 +81,7 @@ public final class ApiServer implements Closeable {
 		this.udpPort = udpPort;
 		this.uptimeMillis = uptimeMillis;
 		this.server = HttpServer.create(new InetSocketAddress(bindHost, bindPort), 0);
-		this.executor = Executors.newFixedThreadPool(HANDLER_THREADS, daemon("api-http"));
+		this.executor = Executors.newCachedThreadPool(daemon("api-http"));
 		this.server.setExecutor(executor);
 		this.server.createContext("/api/status", this::handleStatus);
 		this.server.createContext("/api/routing", this::handleRouting);
@@ -87,6 +90,7 @@ public final class ApiServer implements Closeable {
 		this.server.createContext("/api/share", this::handleShare);
 		this.server.createContext("/api/download", this::handleDownload);
 		this.server.createContext("/api/progress", this::handleProgress);
+		this.server.createContext("/stream", this::handleStream);
 	}
 
 	public void start() {
@@ -303,6 +307,144 @@ public final class ApiServer implements Closeable {
 				.num("peers", p.peers())
 				.byteArray("pieceStates", p.pieceStates())
 				.end());
+	}
+
+	/**
+	 * {@code GET /stream/<40-hex infohash>} — serve the file's bytes for an HTML5
+	 * {@code <video>}, honouring HTTP {@code Range} (206 Partial Content) so the
+	 * player can seek. The {@code Content-Length} is known from the metadata up
+	 * front, so the body can be filled <em>as pieces arrive</em>: each not-yet-held
+	 * piece is awaited (no busy-wait) — this is watch-while-download. A seek (Range
+	 * start) moves the sliding-window playhead so the pieces we are about to read
+	 * are fetched first.
+	 */
+	private void handleStream(HttpExchange ex) throws IOException {
+		if (!requireGet(ex)) {
+			return;
+		}
+		String path = ex.getRequestURI().getPath(); // /stream/<hex>
+		String hex = path.substring(path.lastIndexOf('/') + 1);
+		NodeId infohash;
+		try {
+			infohash = NodeId.fromHex(hex);
+		} catch (RuntimeException bad) {
+			sendJson(ex, 400, "{\"error\":\"malformed infohash in path\"}");
+			return;
+		}
+
+		// Prefer an in-progress download (partial, growing); fall back to a local seed (complete).
+		DownloadSession dl = transfer.session(infohash);
+		PieceStore store = (dl != null) ? dl.store() : transfer.seedStore(infohash);
+		if (store == null) {
+			sendJson(ex, 404, "{\"error\":\"infohash not available locally\"}");
+			return;
+		}
+		TorrentMetadata meta = store.metadata();
+		long total = meta.totalLength();
+
+		ex.getResponseHeaders().add("Accept-Ranges", "bytes");
+		ex.getResponseHeaders().add("Content-Type", "video/mp4");
+
+		if (total <= 0) {
+			ex.sendResponseHeaders(200, -1);
+			ex.close();
+			return;
+		}
+
+		long start = 0;
+		long end = total - 1;
+		int status = 200;
+		String rangeHeader = ex.getRequestHeaders().getFirst("Range");
+		if (rangeHeader != null) {
+			long[] range = parseRange(rangeHeader, total);
+			if (range == null) {
+				ex.getResponseHeaders().add("Content-Range", "bytes */" + total);
+				ex.sendResponseHeaders(416, -1);
+				ex.close();
+				return;
+			}
+			start = range[0];
+			end = range[1];
+			status = 206;
+			ex.getResponseHeaders().add("Content-Range", "bytes " + start + "-" + end + "/" + total);
+		}
+
+		// A seek moves the streaming window so the next pieces fetched are the ones being read.
+		if (dl != null) {
+			dl.setPlayhead((int) (start / meta.pieceSize()));
+		}
+
+		ex.sendResponseHeaders(status, end - start + 1);
+		try (OutputStream os = ex.getResponseBody()) {
+			streamRange(os, store, meta, start, end);
+		} catch (IOException clientGone) {
+			// the player closed the connection (seek / stop) — normal, nothing to do
+		} finally {
+			ex.close();
+		}
+	}
+
+	/** Write file bytes {@code [start, end]} to {@code os}, awaiting each covering piece as needed. */
+	private static void streamRange(OutputStream os, PieceStore store, TorrentMetadata meta,
+			long start, long end) throws IOException {
+		int pieceSize = meta.pieceSize();
+		int firstPiece = (int) (start / pieceSize);
+		int lastPiece = (int) (end / pieceSize);
+		for (int i = firstPiece; i <= lastPiece; i++) {
+			try {
+				if (!store.awaitPiece(i, STREAM_PIECE_TIMEOUT_MS)) {
+					return; // piece never arrived — stop (client sees a short read)
+				}
+			} catch (InterruptedException ie) {
+				Thread.currentThread().interrupt();
+				return;
+			}
+			byte[] piece = store.readPiece(i);
+			long pieceStart = (long) i * pieceSize;
+			int from = (int) Math.max(0, start - pieceStart);
+			int to = (int) Math.min(piece.length - 1, end - pieceStart);
+			os.write(piece, from, to - from + 1);
+			os.flush();
+		}
+	}
+
+	/**
+	 * Parse a single HTTP byte range ({@code bytes=start-end}, {@code bytes=start-},
+	 * or suffix {@code bytes=-n}) against {@code total}. Returns {@code [start,end]}
+	 * (inclusive, clamped), or {@code null} if malformed or unsatisfiable (→ 416).
+	 */
+	private static long[] parseRange(String header, long total) {
+		if (header == null || !header.startsWith("bytes=")) {
+			return null;
+		}
+		String spec = header.substring("bytes=".length()).trim();
+		int dash = spec.indexOf('-');
+		if (dash < 0) {
+			return null;
+		}
+		String s = spec.substring(0, dash).trim();
+		String e = spec.substring(dash + 1).trim();
+		try {
+			long start;
+			long end;
+			if (s.isEmpty()) {
+				long suffix = Long.parseLong(e); // last N bytes
+				if (suffix <= 0) {
+					return null;
+				}
+				start = Math.max(0, total - suffix);
+				end = total - 1;
+			} else {
+				start = Long.parseLong(s);
+				end = e.isEmpty() ? total - 1 : Long.parseLong(e);
+			}
+			if (start < 0 || end < start || start >= total) {
+				return null;
+			}
+			return new long[] { start, Math.min(end, total - 1) };
+		} catch (NumberFormatException nfe) {
+			return null;
+		}
 	}
 
 	// ------------------------------------------------------------------ helpers

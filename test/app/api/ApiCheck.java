@@ -18,6 +18,7 @@ import core.kademlia.KademliaService;
 import core.kademlia.NodeId;
 import core.kademlia.RoutingTable;
 import core.kademlia.UdpTransport;
+import core.transfer.TorrentMetadata;
 import core.transfer.TransferService;
 
 /**
@@ -43,6 +44,7 @@ public class ApiCheck {
 		runGroup("api endpoints (real localhost HTTP)", ApiCheck::endpointChecks);
 		runGroup("dht endpoints (real localhost HTTP)", ApiCheck::dhtChecks);
 		runGroup("transfer endpoints (share/download/progress, real UDP+TCP+HTTP)", ApiCheck::transferChecks);
+		runGroup("stream endpoint (range/206 + watch-while-download, real)", ApiCheck::streamChecks);
 
 		System.out.println();
 		System.out.println(passed + " passed, " + failures.size() + " failed");
@@ -289,6 +291,97 @@ public class ApiCheck {
 		}
 	}
 
+	/**
+	 * The {@code /stream/<infohash>} endpoint: HTTP Range/206, byte-exact slices,
+	 * and watch-while-download. The seeder shares with SMALL pieces so a range
+	 * spans piece boundaries; the leecher streams the file <em>while downloading</em>.
+	 */
+	private static void streamChecks() throws Exception {
+		int n = 3;
+		List<UdpTransport> transports = new ArrayList<>();
+		List<KademliaService> nodes = new ArrayList<>();
+		TransferService seederSvc = null;
+		TransferService leecherSvc = null;
+		ApiServer seederApi = null;
+		ApiServer leecherApi = null;
+		Path src = null;
+		try {
+			for (int i = 0; i < n; i++) {
+				UdpTransport t = new UdpTransport(0);
+				KademliaService s = new KademliaService("127.0.0.1", t.getLocalPort(), t);
+				s.start();
+				transports.add(t);
+				nodes.add(s);
+			}
+			for (int i = 1; i < n; i++) {
+				nodes.get(i).bootstrap(nodes.get(0).self());
+			}
+			seederSvc = new TransferService(nodes.get(0));
+			leecherSvc = new TransferService(nodes.get(2));
+			seederApi = new ApiServer("127.0.0.1", 0, nodes.get(0), seederSvc,
+					nodes.get(0).self().getPort(), () -> 0L);
+			leecherApi = new ApiServer("127.0.0.1", 0, nodes.get(2), leecherSvc,
+					nodes.get(2).self().getPort(), () -> 0L);
+			seederApi.start();
+			leecherApi.start();
+			int seedPort = seederApi.boundPort();
+			int leechPort = leecherApi.boundPort();
+
+			byte[] content = deterministicBytes(512 * 8 + 137, 5); // ~4 KB, 9 pieces at pieceSize 512
+			src = Files.createTempFile("westream-stream-src", ".bin");
+			Files.write(src, content);
+			TorrentMetadata meta = seederSvc.share(src, 512); // small pieces, announced in the DHT
+			String ih = meta.infohash().toString();
+
+			// --- seed side: full file (no Range) -> 200
+			StreamResponse full = httpStream(seedPort, "/stream/" + ih, null);
+			check("stream full -> 200", full.code == 200);
+			check("stream advertises Accept-Ranges", "bytes".equals(full.acceptRanges));
+			check("stream full body byte-identical", Arrays.equals(full.body, content));
+
+			// --- seed side: a range that spans several pieces -> 206 + exact slice
+			StreamResponse part = httpStream(seedPort, "/stream/" + ih, "bytes=400-1200");
+			check("stream range -> 206", part.code == 206);
+			check("stream Content-Range correct",
+					("bytes 400-1200/" + content.length).equals(part.contentRange));
+			check("stream range body == slice",
+					Arrays.equals(part.body, Arrays.copyOfRange(content, 400, 1201)));
+
+			// --- unsatisfiable range -> 416
+			check("range past EOF -> 416",
+					httpStream(seedPort, "/stream/" + ih,
+							"bytes=" + content.length + "-" + (content.length + 9)).code == 416);
+
+			// --- unknown infohash -> 404
+			String bogus = NodeId.fromBytes("nope-stream".getBytes(StandardCharsets.UTF_8)).toString();
+			check("stream unknown infohash -> 404", httpStream(seedPort, "/stream/" + bogus, null).code == 404);
+
+			// --- watch-while-download: leecher streams the whole file WHILE downloading it
+			Response dl = http("POST", leechPort, "/api/download", new Json().str("infohash", ih).end());
+			check("leecher download started", dl.code == 200);
+			StreamResponse watched = httpStream(leechPort, "/stream/" + ih, null);
+			check("watch-while-download -> 200", watched.code == 200);
+			check("watch-while-download body byte-identical", Arrays.equals(watched.body, content));
+		} finally {
+			if (seederApi != null) {
+				seederApi.close();
+			}
+			if (leecherApi != null) {
+				leecherApi.close();
+			}
+			if (seederSvc != null) {
+				seederSvc.close();
+			}
+			if (leecherSvc != null) {
+				leecherSvc.close();
+			}
+			transports.forEach(UdpTransport::close);
+			if (src != null) {
+				Files.deleteIfExists(src);
+			}
+		}
+	}
+
 	// ---------------------------------------------------------------- helpers
 
 	/** Pull the string value of a top-level {@code "name":"..."} field out of a JSON body. */
@@ -338,6 +431,26 @@ public class ApiCheck {
 	}
 
 	private record Response(int code, String body) {
+	}
+
+	/** GET that captures the status, the Range-related headers, and the raw body bytes. */
+	private static StreamResponse httpStream(int port, String path, String rangeHeader) throws IOException {
+		HttpURLConnection con = (HttpURLConnection)
+				URI.create("http://127.0.0.1:" + port + path).toURL().openConnection();
+		con.setRequestMethod("GET");
+		if (rangeHeader != null) {
+			con.setRequestProperty("Range", rangeHeader);
+		}
+		int code = con.getResponseCode();
+		String contentRange = con.getHeaderField("Content-Range");
+		String acceptRanges = con.getHeaderField("Accept-Ranges");
+		InputStream is = (code >= 400) ? con.getErrorStream() : con.getInputStream();
+		byte[] body = (is == null) ? new byte[0] : is.readAllBytes();
+		con.disconnect();
+		return new StreamResponse(code, contentRange, acceptRanges, body);
+	}
+
+	private record StreamResponse(int code, String contentRange, String acceptRanges, byte[] body) {
 	}
 
 	private static byte[] deterministicBytes(int n, int seed) {

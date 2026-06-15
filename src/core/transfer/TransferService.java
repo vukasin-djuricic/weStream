@@ -137,6 +137,20 @@ public final class TransferService implements Closeable {
 		return active.get(infohash);
 	}
 
+	/**
+	 * The local seed store for {@code infohash} (a file this node fully shares), or
+	 * {@code null}. Lets the streaming endpoint serve a seed's complete file
+	 * directly (vs. an in-progress {@link #session}).
+	 */
+	public PieceStore seedStore(NodeId infohash) {
+		for (PieceStore s : stores) {
+			if (s.metadata().infohash().equals(infohash)) {
+				return s;
+			}
+		}
+		return null;
+	}
+
 	// ----------------------------------------------------------- announce codec
 
 	private static byte[] encodeAnnounce(TorrentMetadata meta, String host, int port) {

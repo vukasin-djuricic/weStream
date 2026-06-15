@@ -48,6 +48,30 @@ public final class PieceStore implements Closeable {
 			return false;
 		}
 		have.set(index);
+		notifyAll(); // wake any streamer parked in awaitPiece for this (or a later) piece
+		return true;
+	}
+
+	/** True if piece {@code index} is held and verified. */
+	public synchronized boolean hasPiece(int index) {
+		return have.get(index);
+	}
+
+	/**
+	 * Block until piece {@code index} is available (verified) or {@code timeoutMs}
+	 * elapses — the streaming endpoint's wait for a not-yet-downloaded piece. Parks
+	 * the caller on this store's monitor (no busy-wait, blueprint rule #4); woken by
+	 * {@link #writePiece}. Returns true if the piece is now available.
+	 */
+	public synchronized boolean awaitPiece(int index, long timeoutMs) throws InterruptedException {
+		long deadline = System.currentTimeMillis() + timeoutMs;
+		while (!have.get(index)) {
+			long remaining = deadline - System.currentTimeMillis();
+			if (remaining <= 0) {
+				return false;
+			}
+			wait(remaining);
+		}
 		return true;
 	}
 

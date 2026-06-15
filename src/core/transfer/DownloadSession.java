@@ -69,6 +69,22 @@ public final class DownloadSession implements PeerConnection.Listener, Closeable
 		return peers.size();
 	}
 
+	/** The backing piece store — lets the streaming endpoint read pieces as they arrive. */
+	public PieceStore store() {
+		return store;
+	}
+
+	/**
+	 * Move the streaming window to {@code pieceIndex} (a player seek), if this
+	 * session uses a {@link SlidingWindowPicker}. No-op for other pickers — the
+	 * playhead is the player↔transfer seam (blueprint rule #6).
+	 */
+	public void setPlayhead(int pieceIndex) {
+		if (picker instanceof SlidingWindowPicker sw) {
+			sw.setPlayhead(pieceIndex);
+		}
+	}
+
 	/**
 	 * A point-in-time download snapshot for the Phase-5 UI (swarm rail, scrubber,
 	 * sliding-window strip). Pure data — reading it never touches the network.
