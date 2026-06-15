@@ -4,9 +4,11 @@ import java.io.Closeable;
 import java.io.IOException;
 import java.io.OutputStream;
 import java.net.InetSocketAddress;
+import java.net.URLDecoder;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ThreadFactory;
@@ -18,6 +20,7 @@ import com.sun.net.httpserver.HttpServer;
 
 import core.kademlia.Contact;
 import core.kademlia.KademliaService;
+import core.kademlia.NodeId;
 import core.kademlia.RoutingTable;
 
 /**
@@ -43,6 +46,8 @@ import core.kademlia.RoutingTable;
 public final class ApiServer implements Closeable {
 
 	private static final int HANDLER_THREADS = 4;
+	/** Cap on a request body we will read (the DHT put body is tiny; reject anything large). */
+	private static final int MAX_BODY_BYTES = 64 * 1024;
 
 	private final HttpServer server;
 	private final ExecutorService executor;
@@ -69,6 +74,8 @@ public final class ApiServer implements Closeable {
 		this.server.setExecutor(executor);
 		this.server.createContext("/api/status", this::handleStatus);
 		this.server.createContext("/api/routing", this::handleRouting);
+		this.server.createContext("/api/dht/put", this::handleDhtPut);
+		this.server.createContext("/api/dht/get", this::handleDhtGet);
 	}
 
 	public void start() {
@@ -120,14 +127,103 @@ public final class ApiServer implements Closeable {
 		sendJson(ex, 200, body);
 	}
 
+	/**
+	 * {@code POST /api/dht/put} with body {@code {"key":"...","value":"..."}} —
+	 * stores the value in the DHT under {@code SHA-1(key)}, the SAME derivation the
+	 * CLI {@code dht_put} uses (so CLI and API are interoperable). The blocking
+	 * {@code storeValue} runs on this HTTP pool thread, never the UDP receive
+	 * thread, so it cannot deadlock the engine.
+	 */
+	private void handleDhtPut(HttpExchange ex) throws IOException {
+		if (!requireMethod(ex, "POST")) {
+			return;
+		}
+		Map<String, String> body;
+		try {
+			body = Json.parseFlatObject(readBody(ex, MAX_BODY_BYTES));
+		} catch (RuntimeException badRequest) {
+			sendJson(ex, 400, "{\"error\":\"invalid JSON body\"}");
+			return;
+		}
+		String key = body.get("key");
+		String value = body.get("value");
+		if (key == null || value == null) {
+			sendJson(ex, 400, "{\"error\":\"missing key or value\"}");
+			return;
+		}
+		NodeId keyId = NodeId.fromBytes(key.getBytes(StandardCharsets.UTF_8));
+		kademlia.storeValue(keyId, value.getBytes(StandardCharsets.UTF_8));
+		sendJson(ex, 200, new Json()
+				.bool("stored", true)
+				.str("key", key)
+				.str("keyId", keyId.toString())
+				.end());
+	}
+
+	/**
+	 * {@code GET /api/dht/get?key=...} — resolves {@code SHA-1(key)} via
+	 * {@code findValue} (local store first, otherwise the k closest nodes). Blocking,
+	 * but on the HTTP pool thread (safe). Returns {@code found:false} when absent.
+	 */
+	private void handleDhtGet(HttpExchange ex) throws IOException {
+		if (!requireGet(ex)) {
+			return;
+		}
+		String key = queryParam(ex, "key");
+		if (key == null || key.isEmpty()) {
+			sendJson(ex, 400, "{\"error\":\"missing key\"}");
+			return;
+		}
+		NodeId keyId = NodeId.fromBytes(key.getBytes(StandardCharsets.UTF_8));
+		byte[] value = kademlia.findValue(keyId);
+		Json j = new Json()
+				.str("key", key)
+				.str("keyId", keyId.toString())
+				.bool("found", value != null);
+		if (value != null) {
+			j.str("value", new String(value, StandardCharsets.UTF_8));
+		}
+		sendJson(ex, 200, j.end());
+	}
+
 	// ------------------------------------------------------------------ helpers
 
 	private boolean requireGet(HttpExchange ex) throws IOException {
-		if (!"GET".equalsIgnoreCase(ex.getRequestMethod())) {
+		return requireMethod(ex, "GET");
+	}
+
+	private boolean requireMethod(HttpExchange ex, String method) throws IOException {
+		if (!method.equalsIgnoreCase(ex.getRequestMethod())) {
 			sendJson(ex, 405, "{\"error\":\"method not allowed\"}");
 			return false;
 		}
 		return true;
+	}
+
+	/** Read up to {@code max} bytes of the request body as UTF-8; reject anything larger. */
+	private static String readBody(HttpExchange ex, int max) throws IOException {
+		byte[] data = ex.getRequestBody().readNBytes(max + 1);
+		if (data.length > max) {
+			throw new IllegalArgumentException("request body too large");
+		}
+		return new String(data, StandardCharsets.UTF_8);
+	}
+
+	/** Value of a single query-string parameter (URL-decoded), or {@code null} if absent. */
+	private static String queryParam(HttpExchange ex, String name) {
+		String raw = ex.getRequestURI().getRawQuery();
+		if (raw == null) {
+			return null;
+		}
+		for (String pair : raw.split("&")) {
+			int eq = pair.indexOf('=');
+			String k = (eq < 0) ? pair : pair.substring(0, eq);
+			if (k.equals(name)) {
+				String v = (eq < 0) ? "" : pair.substring(eq + 1);
+				return URLDecoder.decode(v, StandardCharsets.UTF_8);
+			}
+		}
+		return null;
 	}
 
 	private static void sendJson(HttpExchange ex, int status, String body) throws IOException {

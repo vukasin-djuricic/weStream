@@ -5,8 +5,10 @@ import java.io.InputStream;
 import java.net.HttpURLConnection;
 import java.net.URI;
 import java.nio.charset.StandardCharsets;
+import java.net.URLEncoder;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 
 import core.kademlia.Contact;
 import core.kademlia.KademliaService;
@@ -33,7 +35,9 @@ public class ApiCheck {
 
 	public static void main(String[] args) {
 		runGroup("json writer (unit)", ApiCheck::jsonChecks);
+		runGroup("json reader (unit)", ApiCheck::jsonReaderChecks);
 		runGroup("api endpoints (real localhost HTTP)", ApiCheck::endpointChecks);
+		runGroup("dht endpoints (real localhost HTTP)", ApiCheck::dhtChecks);
 
 		System.out.println();
 		System.out.println(passed + " passed, " + failures.size() + " failed");
@@ -57,6 +61,33 @@ public class ApiCheck {
 		check("array of pre-encoded elements",
 				Json.array(List.of("1", "{\"k\":2}")).equals("[1,{\"k\":2}]"));
 		check("null value", new Json().str("a", null).end().equals("{\"a\":null}"));
+	}
+
+	private static void jsonReaderChecks() {
+		Map<String, String> two = Json.parseFlatObject("{\"key\":\"hello\",\"value\":\"world\"}");
+		check("reader parses two fields",
+				"hello".equals(two.get("key")) && "world".equals(two.get("value")));
+		check("reader parses empty object", Json.parseFlatObject("{}").isEmpty());
+		check("reader tolerates whitespace",
+				"v".equals(Json.parseFlatObject("  {  \"k\" : \"v\" }  ").get("k")));
+		Map<String, String> esc = Json.parseFlatObject("{\"k\":\"a\\\"b\\n\\u0041\"}");
+		check("reader decodes escapes", "a\"b\nA".equals(esc.get("k")));
+		// write-then-read round trip survives a value full of special chars
+		String tricky = "q\"u\\o\te\n";
+		String encoded = new Json().str("value", tricky).end();
+		check("writer/reader round-trip",
+				tricky.equals(Json.parseFlatObject(encoded).get("value")));
+		check("reader rejects malformed", throwsOnParse("{\"k\":") );
+		check("reader rejects non-object", throwsOnParse("\"bare\""));
+	}
+
+	private static boolean throwsOnParse(String json) {
+		try {
+			Json.parseFlatObject(json);
+			return false;
+		} catch (RuntimeException expected) {
+			return true;
+		}
 	}
 
 	private static void endpointChecks() throws Exception {
@@ -97,6 +128,54 @@ public class ApiCheck {
 		}
 	}
 
+	private static void dhtChecks() throws Exception {
+		UdpTransport transport = new UdpTransport(0);
+		int udpPort = transport.getLocalPort();
+		KademliaService kad = new KademliaService("127.0.0.1", udpPort, transport);
+		kad.start();
+		ApiServer api = new ApiServer("127.0.0.1", 0, kad, udpPort, () -> 0L);
+		api.start();
+		int p = api.boundPort();
+		try {
+			// put -> 200, stored
+			Response put = http("POST", p, "/api/dht/put", "{\"key\":\"hello\",\"value\":\"world\"}");
+			check("put -> 200", put.code == 200);
+			check("put reports stored", put.body.contains("\"stored\":true"));
+
+			// get the same key -> found + value (single node: served from the local store)
+			Response get = http("GET", p, "/api/dht/get?key=hello");
+			check("get -> 200", get.code == 200);
+			check("get found", get.body.contains("\"found\":true"));
+			check("get returns value", get.body.contains("\"value\":\"world\""));
+
+			// CLI/API interop: SHA-1(key) keyId must match the engine's derivation
+			NodeId expectedId = NodeId.fromBytes("hello".getBytes(StandardCharsets.UTF_8));
+			check("keyId is SHA-1(key)", get.body.contains("\"keyId\":\"" + expectedId + "\""));
+
+			// special-character value survives the write/parse/store/read round trip
+			String tricky = "a\"b\\c";
+			http("POST", p, "/api/dht/put", new Json().str("key", "weird").str("value", tricky).end());
+			Response got = http("GET", p, "/api/dht/get?key=" + URLEncoder.encode("weird", StandardCharsets.UTF_8));
+			check("tricky value round-trips",
+					got.body.contains("\"value\":" + Json.quote(tricky)));
+
+			// missing key -> found:false (not an error)
+			Response miss = http("GET", p, "/api/dht/get?key=nope");
+			check("absent key -> 200 found:false",
+					miss.code == 200 && miss.body.contains("\"found\":false"));
+
+			// bad inputs
+			check("bad JSON body -> 400", http("POST", p, "/api/dht/put", "{not json").code == 400);
+			check("missing value -> 400",
+					http("POST", p, "/api/dht/put", "{\"key\":\"k\"}").code == 400);
+			check("get without key -> 400", http("GET", p, "/api/dht/get").code == 400);
+			check("wrong method on put -> 405", http("GET", p, "/api/dht/put").code == 405);
+		} finally {
+			api.close();
+			transport.close();
+		}
+	}
+
 	// ---------------------------------------------------------------- helpers
 
 	/** Count the entries in the {@code "bucketSizes":[...]} array of a routing body. */
@@ -115,9 +194,17 @@ public class ApiCheck {
 	}
 
 	private static Response http(String method, int port, String path) throws IOException {
+		return http(method, port, path, null);
+	}
+
+	private static Response http(String method, int port, String path, String requestBody) throws IOException {
 		HttpURLConnection con = (HttpURLConnection)
 				URI.create("http://127.0.0.1:" + port + path).toURL().openConnection();
 		con.setRequestMethod(method);
+		if (requestBody != null) {
+			con.setDoOutput(true);
+			con.getOutputStream().write(requestBody.getBytes(StandardCharsets.UTF_8));
+		}
 		int code = con.getResponseCode();
 		InputStream is = (code >= 400) ? con.getErrorStream() : con.getInputStream();
 		String body = (is == null) ? "" : new String(is.readAllBytes(), StandardCharsets.UTF_8);
