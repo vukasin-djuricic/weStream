@@ -6,6 +6,8 @@ import java.io.OutputStream;
 import java.net.InetSocketAddress;
 import java.net.URLDecoder;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
@@ -22,6 +24,9 @@ import core.kademlia.Contact;
 import core.kademlia.KademliaService;
 import core.kademlia.NodeId;
 import core.kademlia.RoutingTable;
+import core.transfer.DownloadSession;
+import core.transfer.TorrentMetadata;
+import core.transfer.TransferService;
 
 /**
  * The local HTTP control API for a single weStream node — the seam the Phase-5
@@ -52,6 +57,7 @@ public final class ApiServer implements Closeable {
 	private final HttpServer server;
 	private final ExecutorService executor;
 	private final KademliaService kademlia;
+	private final TransferService transfer;
 	private final int udpPort;
 	private final LongSupplier uptimeMillis;
 
@@ -61,12 +67,14 @@ public final class ApiServer implements Closeable {
 	 * @param bindHost     loopback address to bind ({@code 127.0.0.1} in production)
 	 * @param bindPort     TCP port to bind; pass {@code 0} for an ephemeral port (tests)
 	 * @param kademlia     the live node whose state the endpoints read
+	 * @param transfer     the transfer service backing share/download/progress
 	 * @param udpPort      this node's UDP listener port (reported by {@code /api/status})
 	 * @param uptimeMillis supplies milliseconds since the node booted
 	 */
 	public ApiServer(String bindHost, int bindPort, KademliaService kademlia,
-			int udpPort, LongSupplier uptimeMillis) throws IOException {
+			TransferService transfer, int udpPort, LongSupplier uptimeMillis) throws IOException {
 		this.kademlia = kademlia;
+		this.transfer = transfer;
 		this.udpPort = udpPort;
 		this.uptimeMillis = uptimeMillis;
 		this.server = HttpServer.create(new InetSocketAddress(bindHost, bindPort), 0);
@@ -76,6 +84,9 @@ public final class ApiServer implements Closeable {
 		this.server.createContext("/api/routing", this::handleRouting);
 		this.server.createContext("/api/dht/put", this::handleDhtPut);
 		this.server.createContext("/api/dht/get", this::handleDhtGet);
+		this.server.createContext("/api/share", this::handleShare);
+		this.server.createContext("/api/download", this::handleDownload);
+		this.server.createContext("/api/progress", this::handleProgress);
 	}
 
 	public void start() {
@@ -184,6 +195,114 @@ public final class ApiServer implements Closeable {
 			j.str("value", new String(value, StandardCharsets.UTF_8));
 		}
 		sendJson(ex, 200, j.end());
+	}
+
+	/**
+	 * {@code POST /api/share} with body {@code {"path":"..."}} — split + hash the
+	 * file, seed it, announce it in the DHT, and return its metadata + infohash.
+	 */
+	private void handleShare(HttpExchange ex) throws IOException {
+		if (!requireMethod(ex, "POST")) {
+			return;
+		}
+		String pathStr;
+		try {
+			pathStr = Json.parseFlatObject(readBody(ex, MAX_BODY_BYTES)).get("path");
+		} catch (RuntimeException badRequest) {
+			sendJson(ex, 400, "{\"error\":\"invalid JSON body\"}");
+			return;
+		}
+		if (pathStr == null || pathStr.isEmpty()) {
+			sendJson(ex, 400, "{\"error\":\"missing path\"}");
+			return;
+		}
+		Path path = Path.of(pathStr);
+		if (!Files.isRegularFile(path)) {
+			sendJson(ex, 400, "{\"error\":\"not a readable file: " + Json.escape(pathStr) + "\"}");
+			return;
+		}
+		TorrentMetadata meta = transfer.share(path);
+		sendJson(ex, 200, new Json()
+				.str("infohash", meta.infohash().toString())
+				.num("pieceSize", meta.pieceSize())
+				.num("totalLength", meta.totalLength())
+				.num("pieceCount", meta.pieceCount())
+				.end());
+	}
+
+	/**
+	 * {@code POST /api/download} with body {@code {"infohash":"<40-hex>"[,"out":"..."]}} —
+	 * start a non-blocking, sliding-window download. Returns {@code 404} if the
+	 * infohash is not announced in the DHT; otherwise {@code started:true} and the
+	 * resolved output path (poll {@code /api/progress} to watch it).
+	 */
+	private void handleDownload(HttpExchange ex) throws IOException {
+		if (!requireMethod(ex, "POST")) {
+			return;
+		}
+		Map<String, String> body;
+		try {
+			body = Json.parseFlatObject(readBody(ex, MAX_BODY_BYTES));
+		} catch (RuntimeException badRequest) {
+			sendJson(ex, 400, "{\"error\":\"invalid JSON body\"}");
+			return;
+		}
+		NodeId infohash;
+		try {
+			infohash = NodeId.fromHex(body.get("infohash"));
+		} catch (RuntimeException badHash) {
+			sendJson(ex, 400, "{\"error\":\"missing or malformed infohash\"}");
+			return;
+		}
+		String outStr = body.get("out");
+		Path out = (outStr != null && !outStr.isEmpty())
+				? Path.of(outStr)
+				: Path.of(System.getProperty("java.io.tmpdir"), "westream-" + infohash + ".bin");
+
+		DownloadSession dl = transfer.startDownload(infohash, out);
+		if (dl == null) {
+			sendJson(ex, 404, "{\"error\":\"infohash not announced in the DHT\"}");
+			return;
+		}
+		sendJson(ex, 200, new Json()
+				.bool("started", true)
+				.str("infohash", infohash.toString())
+				.str("out", out.toString())
+				.end());
+	}
+
+	/**
+	 * {@code GET /api/progress?infohash=<40-hex>} — the live download snapshot that
+	 * drives the sliding-window strip / scrubber: per-piece state bytes
+	 * (0=missing, 1=in-flight, 2=have) plus counts. {@code active:false} when no
+	 * download is running for that infohash.
+	 */
+	private void handleProgress(HttpExchange ex) throws IOException {
+		if (!requireGet(ex)) {
+			return;
+		}
+		NodeId infohash;
+		try {
+			infohash = NodeId.fromHex(queryParam(ex, "infohash"));
+		} catch (RuntimeException badHash) {
+			sendJson(ex, 400, "{\"error\":\"missing or malformed infohash\"}");
+			return;
+		}
+		DownloadSession dl = transfer.session(infohash);
+		if (dl == null) {
+			sendJson(ex, 200, "{\"active\":false}");
+			return;
+		}
+		DownloadSession.Progress p = dl.progress();
+		sendJson(ex, 200, new Json()
+				.bool("active", true)
+				.bool("complete", dl.isComplete())
+				.num("have", p.have())
+				.num("inFlight", p.inFlight())
+				.num("total", p.total())
+				.num("peers", p.peers())
+				.byteArray("pieceStates", p.pieceStates())
+				.end());
 	}
 
 	// ------------------------------------------------------------------ helpers

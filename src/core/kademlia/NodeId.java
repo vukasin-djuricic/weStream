@@ -58,6 +58,24 @@ public final class NodeId implements Comparable<NodeId> {
 		return new NodeId(new BigInteger(1, raw));
 	}
 
+	/**
+	 * Parse the 40-character zero-padded hex string form (the inverse of
+	 * {@link #toString()}). Used to turn an infohash carried as text (CLI arg, HTTP
+	 * request) back into an id.
+	 *
+	 * @throws IllegalArgumentException if {@code hex} is not exactly 40 hex digits
+	 */
+	public static NodeId fromHex(String hex) {
+		if (hex == null || hex.length() != ID_BITS / 4) {
+			throw new IllegalArgumentException("expected " + (ID_BITS / 4) + " hex digits");
+		}
+		try {
+			return new NodeId(new BigInteger(hex, 16));
+		} catch (NumberFormatException e) {
+			throw new IllegalArgumentException("not a hex id: " + hex, e);
+		}
+	}
+
 	/** Fixed-width 20-byte (160-bit) big-endian representation, for the wire protocol. */
 	public byte[] toBytes() {
 		byte[] full = value.toByteArray(); // big-endian, may carry a sign byte or be short

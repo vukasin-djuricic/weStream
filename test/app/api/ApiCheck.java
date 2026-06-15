@@ -4,9 +4,12 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.net.HttpURLConnection;
 import java.net.URI;
-import java.nio.charset.StandardCharsets;
 import java.net.URLEncoder;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
 
@@ -15,6 +18,7 @@ import core.kademlia.KademliaService;
 import core.kademlia.NodeId;
 import core.kademlia.RoutingTable;
 import core.kademlia.UdpTransport;
+import core.transfer.TransferService;
 
 /**
  * Zero-dependency regression checks for the local HTTP API ({@link ApiServer}) —
@@ -38,6 +42,7 @@ public class ApiCheck {
 		runGroup("json reader (unit)", ApiCheck::jsonReaderChecks);
 		runGroup("api endpoints (real localhost HTTP)", ApiCheck::endpointChecks);
 		runGroup("dht endpoints (real localhost HTTP)", ApiCheck::dhtChecks);
+		runGroup("transfer endpoints (share/download/progress, real UDP+TCP+HTTP)", ApiCheck::transferChecks);
 
 		System.out.println();
 		System.out.println(passed + " passed, " + failures.size() + " failed");
@@ -98,7 +103,8 @@ public class ApiCheck {
 		// Seed one known peer so /api/routing has a contact and peerCount == 1.
 		kad.routingTable().update(new Contact("127.0.0.1", 1200));
 
-		ApiServer api = new ApiServer("127.0.0.1", 0, kad, udpPort, () -> 4242L);
+		TransferService transfer = new TransferService(kad);
+		ApiServer api = new ApiServer("127.0.0.1", 0, kad, transfer, udpPort, () -> 4242L);
 		api.start();
 		int p = api.boundPort();
 		try {
@@ -124,6 +130,7 @@ public class ApiCheck {
 			check("non-GET -> 405", post.code == 405);
 		} finally {
 			api.close();
+			transfer.close();
 			transport.close();
 		}
 	}
@@ -133,7 +140,8 @@ public class ApiCheck {
 		int udpPort = transport.getLocalPort();
 		KademliaService kad = new KademliaService("127.0.0.1", udpPort, transport);
 		kad.start();
-		ApiServer api = new ApiServer("127.0.0.1", 0, kad, udpPort, () -> 0L);
+		TransferService transfer = new TransferService(kad);
+		ApiServer api = new ApiServer("127.0.0.1", 0, kad, transfer, udpPort, () -> 0L);
 		api.start();
 		int p = api.boundPort();
 		try {
@@ -172,11 +180,128 @@ public class ApiCheck {
 			check("wrong method on put -> 405", http("GET", p, "/api/dht/put").code == 405);
 		} finally {
 			api.close();
+			transfer.close();
 			transport.close();
 		}
 	}
 
+	/**
+	 * End-to-end through HTTP: node 0 shares a file via {@code /api/share}, node 2
+	 * downloads it via {@code /api/download}, and we poll {@code /api/progress}
+	 * until complete — then assert the bytes are identical. Mirrors
+	 * {@code TransferCheck.dhtDiscoveryChecks} but driven entirely over the API.
+	 */
+	private static void transferChecks() throws Exception {
+		int n = 3;
+		List<UdpTransport> transports = new ArrayList<>();
+		List<KademliaService> nodes = new ArrayList<>();
+		TransferService seederSvc = null;
+		TransferService leecherSvc = null;
+		ApiServer seederApi = null;
+		ApiServer leecherApi = null;
+		Path src = null;
+		Path out = null;
+		try {
+			for (int i = 0; i < n; i++) {
+				UdpTransport t = new UdpTransport(0);
+				KademliaService s = new KademliaService("127.0.0.1", t.getLocalPort(), t);
+				s.start();
+				transports.add(t);
+				nodes.add(s);
+			}
+			for (int i = 1; i < n; i++) {
+				nodes.get(i).bootstrap(nodes.get(0).self());
+			}
+
+			seederSvc = new TransferService(nodes.get(0));
+			leecherSvc = new TransferService(nodes.get(2));
+			seederApi = new ApiServer("127.0.0.1", 0, nodes.get(0), seederSvc,
+					nodes.get(0).self().getPort(), () -> 0L);
+			leecherApi = new ApiServer("127.0.0.1", 0, nodes.get(2), leecherSvc,
+					nodes.get(2).self().getPort(), () -> 0L);
+			seederApi.start();
+			leecherApi.start();
+			int seedPort = seederApi.boundPort();
+			int leechPort = leecherApi.boundPort();
+
+			// ~525 KB so the default 256 KB piece size yields 3 pieces (real progress to watch).
+			byte[] content = deterministicBytes(262144 * 2 + 1000, 7);
+			src = Files.createTempFile("westream-api-src", ".bin");
+			Files.write(src, content);
+			out = Files.createTempFile("westream-api-out", ".bin");
+
+			// --- share on node 0
+			Response share = http("POST", seedPort, "/api/share",
+					new Json().str("path", src.toString()).end());
+			check("share -> 200", share.code == 200);
+			check("share reports 3 pieces", share.body.contains("\"pieceCount\":3"));
+			String infohash = extract(share.body, "infohash");
+			check("share returns 40-hex infohash", infohash != null && infohash.length() == 40);
+			check("infohash parses via NodeId.fromHex",
+					NodeId.fromHex(infohash).toString().equals(infohash));
+
+			// --- download on node 2 (non-blocking)
+			Response dl = http("POST", leechPort, "/api/download",
+					new Json().str("infohash", infohash).str("out", out.toString()).end());
+			check("download -> 200 started", dl.code == 200 && dl.body.contains("\"started\":true"));
+
+			// --- poll progress until complete (or time out)
+			boolean complete = false;
+			String last = "";
+			for (int i = 0; i < 100 && !complete; i++) {
+				last = http("GET", leechPort, "/api/progress?infohash=" + infohash).body;
+				complete = last.contains("\"complete\":true");
+				if (!complete) {
+					Thread.sleep(100);
+				}
+			}
+			check("progress reports active with total 3", last.contains("\"total\":3"));
+			check("progress reaches complete", complete);
+			check("downloaded file byte-identical", Arrays.equals(Files.readAllBytes(out), content));
+
+			// unknown infohash -> 404
+			String bogus = NodeId.fromBytes("never-shared".getBytes(StandardCharsets.UTF_8)).toString();
+			check("download of unknown infohash -> 404",
+					http("POST", leechPort, "/api/download",
+							new Json().str("infohash", bogus).end()).code == 404);
+			check("progress of unknown infohash -> active:false",
+					http("GET", leechPort, "/api/progress?infohash=" + bogus).body.contains("\"active\":false"));
+		} finally {
+			if (seederApi != null) {
+				seederApi.close();
+			}
+			if (leecherApi != null) {
+				leecherApi.close();
+			}
+			if (seederSvc != null) {
+				seederSvc.close();
+			}
+			if (leecherSvc != null) {
+				leecherSvc.close();
+			}
+			transports.forEach(UdpTransport::close);
+			if (src != null) {
+				Files.deleteIfExists(src);
+			}
+			if (out != null) {
+				Files.deleteIfExists(out);
+			}
+		}
+	}
+
 	// ---------------------------------------------------------------- helpers
+
+	/** Pull the string value of a top-level {@code "name":"..."} field out of a JSON body. */
+	private static String extract(String body, String name) {
+		String key = "\"" + name + "\":\"";
+		int i = body.indexOf(key);
+		if (i < 0) {
+			return null;
+		}
+		int start = i + key.length();
+		int end = body.indexOf('"', start);
+		return end < 0 ? null : body.substring(start, end);
+	}
 
 	/** Count the entries in the {@code "bucketSizes":[...]} array of a routing body. */
 	private static int bucketSizesLength(String body) {
@@ -213,6 +338,14 @@ public class ApiCheck {
 	}
 
 	private record Response(int code, String body) {
+	}
+
+	private static byte[] deterministicBytes(int n, int seed) {
+		byte[] data = new byte[n];
+		for (int i = 0; i < n; i++) {
+			data[i] = (byte) ((i * 31 + 7 + seed) & 0xff);
+		}
+		return data;
 	}
 
 	// ---------------------------------------------------- tiny check harness

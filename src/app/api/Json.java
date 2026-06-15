@@ -61,6 +61,20 @@ final class Json {
 		return this;
 	}
 
+	/** Emit a {@code byte[]} as a JSON number array (e.g. the per-piece state bytes 0/1/2). */
+	Json byteArray(String name, byte[] values) {
+		key(name);
+		sb.append('[');
+		for (int i = 0; i < values.length; i++) {
+			if (i > 0) {
+				sb.append(',');
+			}
+			sb.append(values[i]);
+		}
+		sb.append(']');
+		return this;
+	}
+
 	/** Append {@code name: <rawJson>} verbatim — caller guarantees {@code rawJson} is valid JSON. */
 	Json raw(String name, String rawJson) {
 		key(name);

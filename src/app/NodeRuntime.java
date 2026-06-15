@@ -65,7 +65,7 @@ public final class NodeRuntime implements Closeable {
 		// Local HTTP control API (loopback only) — the Phase-5 Electron/React seam.
 		// Lives in app.api (not core.*), so the engine's zero-dependency rule holds.
 		this.apiPort = API_PORT_BASE + (port - SEED_UDP_PORT);
-		this.api = new ApiServer("127.0.0.1", apiPort, kademlia, port, this::uptimeMillis);
+		this.api = new ApiServer("127.0.0.1", apiPort, kademlia, transferService, port, this::uptimeMillis);
 		this.api.start();
 	}
 

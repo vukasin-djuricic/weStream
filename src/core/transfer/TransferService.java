@@ -10,6 +10,8 @@ import java.net.Socket;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
 
 import core.kademlia.KademliaService;
@@ -31,6 +33,8 @@ public final class TransferService implements Closeable {
 
 	private static final int DOWNLOAD_TIMEOUT_MS = 30_000;
 	private static final int MAX_IN_FLIGHT = 16;
+	/** Sliding-window size for streaming downloads (the player's playhead drives the window). */
+	private static final int STREAM_WINDOW = 16;
 	/** Defensive cap when parsing a DHT announce (guards against a hostile value). */
 	private static final int MAX_PIECES = 1 << 20;
 
@@ -41,6 +45,8 @@ public final class TransferService implements Closeable {
 	private final List<TcpPeerServer> servers = new CopyOnWriteArrayList<>();
 	private final List<SeedSession> seeds = new CopyOnWriteArrayList<>();
 	private final List<PieceStore> stores = new CopyOnWriteArrayList<>();
+	/** Live, non-blocking downloads keyed by infohash (the Phase-5 UI polls these via progress()). */
+	private final Map<NodeId, DownloadSession> active = new ConcurrentHashMap<>();
 
 	public TransferService(KademliaService dht) {
 		this.dht = dht;
@@ -92,6 +98,43 @@ public final class TransferService implements Closeable {
 		} finally {
 			dl.close();
 		}
+	}
+
+	/**
+	 * Start a download <em>without blocking</em> and return its live
+	 * {@link DownloadSession} (or {@code null} if the infohash is not announced in
+	 * the DHT). Unlike {@link #download}, this does not wait for completion: the
+	 * session runs event-driven on its peer-reader threads, and a caller (the
+	 * Phase-5 UI / HTTP {@code /api/progress}) polls {@link DownloadSession#progress()}.
+	 *
+	 * <p>Uses the {@link SlidingWindowPicker} (the streaming path, blueprint rule
+	 * #6) rather than rarest-first, so a player can later drive the window via the
+	 * picker's playhead. The session is tracked in {@link #active} and reachable via
+	 * {@link #session(NodeId)}; {@link #close()} shuts any still running.
+	 *
+	 * <p>The brief {@code findValue} below blocks on the DHT — fine on an HTTP/app
+	 * thread, never the UDP receive thread.
+	 */
+	public DownloadSession startDownload(NodeId infohash, Path out) throws IOException {
+		DownloadSession existing = active.get(infohash);
+		if (existing != null) {
+			return existing; // already downloading this file
+		}
+		byte[] announce = dht.findValue(infohash);
+		if (announce == null) {
+			return null;
+		}
+		Announce a = decodeAnnounce(announce);
+		DownloadSession dl = new DownloadSession(
+				a.meta, out, selfId, new SlidingWindowPicker(a.meta.pieceCount(), STREAM_WINDOW), MAX_IN_FLIGHT);
+		dl.addPeer(new Socket(a.host, a.port));
+		active.put(infohash, dl);
+		return dl;
+	}
+
+	/** The live download for {@code infohash}, or {@code null} if none is active. */
+	public DownloadSession session(NodeId infohash) {
+		return active.get(infohash);
 	}
 
 	// ----------------------------------------------------------- announce codec
@@ -147,6 +190,13 @@ public final class TransferService implements Closeable {
 
 	@Override
 	public void close() {
+		for (DownloadSession dl : active.values()) {
+			try {
+				dl.close();
+			} catch (IOException ignored) {
+				// best effort
+			}
+		}
 		for (TcpPeerServer s : servers) {
 			s.close();
 		}
