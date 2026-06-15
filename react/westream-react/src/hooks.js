@@ -6,7 +6,7 @@
 // screen falls back to its mock.
 
 import { useEffect, useRef, useState } from "react";
-import { getStatus, getRouting, getProgress, getTransfers } from "./api";
+import { getStatus, getRouting, getProgress, getTransfers, getRpcLog } from "./api";
 
 /**
  * Poll `fetchFn` every `intervalMs`. Returns { data, error }. Uses a setTimeout
@@ -52,6 +52,24 @@ export const useProgress = (infohash) =>
 
 /** Poll the Library list (files this node seeds/downloads) at 1.5s. */
 export const useTransfers = () => usePoll(getTransfers, 1500);
+
+/** Poll the RPC activity log at 1s (drives the DHT inspector's live feed). */
+export const useRpcLog = () => usePoll(getRpcLog, 1000);
+
+const RPC_TYPE_COLOR = {
+  FIND_NODE: "#c08fe8", FIND_VALUE: "#c08fe8", STORE: "#f4bf4f",
+  PING: "#6cc8e8", NODES: "#74e3b0", VALUE: "#74e3b0", PONG: "#6cc8e8", STORED: "#74e3b0",
+};
+
+/** /api/rpclog events (already newest-first) → the rpcLog row shape the DHT screen renders. */
+export function rpcLogFromEvents(events) {
+  return events.map((e) => ({
+    time: e.time, dir: e.dir, type: e.type, peer: e.peer, result: e.detail || "",
+    dirColor: e.dir === "→" ? "#ee7fb0" : "#6cc8e8",
+    typeColor: RPC_TYPE_COLOR[e.type] || "#b3aac0",
+    resultColor: e.detail === "timeout" ? "#f0795e" : "#6b6379",
+  }));
+}
 
 /** bytes → "1.74 GB" / "691 MB" / "480 KB". */
 export function humanBytes(n) {

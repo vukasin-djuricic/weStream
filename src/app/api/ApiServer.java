@@ -8,7 +8,9 @@ import java.net.URLDecoder;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.text.SimpleDateFormat;
 import java.util.ArrayList;
+import java.util.Date;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ExecutorService;
@@ -24,6 +26,7 @@ import core.kademlia.Contact;
 import core.kademlia.KademliaService;
 import core.kademlia.NodeId;
 import core.kademlia.RoutingTable;
+import core.kademlia.RpcLog;
 import core.transfer.DownloadSession;
 import core.transfer.PieceStore;
 import core.transfer.TorrentMetadata;
@@ -91,6 +94,7 @@ public final class ApiServer implements Closeable {
 		this.server.createContext("/api/download", this::handleDownload);
 		this.server.createContext("/api/progress", this::handleProgress);
 		this.server.createContext("/api/transfers", this::handleTransfers);
+		this.server.createContext("/api/rpclog", this::handleRpcLog);
 		this.server.createContext("/stream", this::handleStream);
 	}
 
@@ -333,6 +337,30 @@ public final class ApiServer implements Closeable {
 					.end());
 		}
 		sendJson(ex, 200, new Json().raw("transfers", Json.array(items)).end());
+	}
+
+	/**
+	 * {@code GET /api/rpclog} — recent RPC activity (newest first, capped), for the
+	 * DHT inspector's live log. {@code dir} is "→" (sent) / "←" (received).
+	 */
+	private void handleRpcLog(HttpExchange ex) throws IOException {
+		if (!requireGet(ex)) {
+			return;
+		}
+		SimpleDateFormat hms = new SimpleDateFormat("HH:mm:ss");
+		List<RpcLog.Event> events = kademlia.rpcEvents();
+		List<String> items = new ArrayList<>();
+		for (int i = events.size() - 1; i >= 0 && items.size() < 40; i--) { // newest first, cap 40
+			RpcLog.Event e = events.get(i);
+			items.add(new Json()
+					.str("time", hms.format(new Date(e.timeMillis())))
+					.str("dir", e.outbound() ? "→" : "←")
+					.str("type", e.type())
+					.str("peer", e.peer())
+					.str("detail", e.detail())
+					.end());
+		}
+		sendJson(ex, 200, new Json().raw("events", Json.array(items)).end());
 	}
 
 	/**

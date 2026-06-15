@@ -51,6 +51,9 @@ public class KademliaService {
 	/** Local key/value store backing STORE / FIND_VALUE. */
 	private final Map<NodeId, byte[]> store = new ConcurrentHashMap<>();
 
+	/** Recent RPC activity (inbound + outbound), for the Phase-5 DHT inspector. */
+	private final RpcLog rpcLog = new RpcLog(256);
+
 	public KademliaService(String host, int port, Transport transport) {
 		this.self = new Contact(host, port);
 		this.routingTable = new RoutingTable(self.getId());
@@ -80,6 +83,11 @@ public class KademliaService {
 		return new ArrayList<>(store.keySet());
 	}
 
+	/** Snapshot of recent RPC activity (oldest → newest), for the DHT inspector's live log. */
+	public List<RpcLog.Event> rpcEvents() {
+		return rpcLog.snapshot();
+	}
+
 	// ----------------------------------------------------------------- inbound
 
 	private void onRaw(Contact wireSource, byte[] data) {
@@ -89,6 +97,9 @@ public class KademliaService {
 		} catch (RuntimeException malformed) {
 			return; // drop garbage rather than crash the receive loop
 		}
+
+		rpcLog.add(new RpcLog.Event(System.currentTimeMillis(), false, msg.type.name(),
+				peerLabel(wireSource), detailOf(msg)));
 
 		// Learn the address we ACTUALLY heard from (the wire source), never the
 		// self-reported endpoint in the payload — a peer could spoof that to poison
@@ -131,12 +142,32 @@ public class KademliaService {
 	}
 
 	private void reply(Contact to, Message msg) {
+		rpcLog.add(new RpcLog.Event(System.currentTimeMillis(), true, msg.type.name(),
+				peerLabel(to), detailOf(msg)));
 		transport.send(to, codec.encode(msg));
+	}
+
+	/** Short {@code id@host} label for the RPC log (first 8 hex of the id). */
+	private static String peerLabel(Contact c) {
+		return c.getId().toString().substring(0, 8) + "@" + c.getHost();
+	}
+
+	/** Tiny human hint for the RPC log's result column. */
+	private static String detailOf(Message m) {
+		if (m.contacts != null) {
+			return m.contacts.size() + " contacts";
+		}
+		if (m.value != null) {
+			return m.value.length + " B";
+		}
+		return "";
 	}
 
 	// ---------------------------------------------------------------- outbound
 
 	private CompletableFuture<Message> rpc(Contact to, Message request) {
+		rpcLog.add(new RpcLog.Event(System.currentTimeMillis(), true, request.type.name(),
+				peerLabel(to), detailOf(request)));
 		CompletableFuture<Message> future = new CompletableFuture<>();
 		pending.put(request.txId, future);
 		scheduler.schedule(() -> {

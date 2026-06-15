@@ -43,6 +43,7 @@ export const dhtGet = (key) => getJson(`/api/dht/get?key=${encodeURIComponent(ke
 export const getProgress = (infohash) =>
   getJson(`/api/progress?infohash=${encodeURIComponent(infohash)}`);
 export const getTransfers = () => getJson("/api/transfers");
+export const getRpcLog = () => getJson("/api/rpclog");
 
 // ---- action endpoints ----
 export const dhtPut = (key, value) => postJson("/api/dht/put", { key, value });

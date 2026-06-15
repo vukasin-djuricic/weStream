@@ -280,6 +280,14 @@ public class ApiCheck {
 					leecherTransfers.contains("\"infohash\":\"" + infohash + "\"")
 							&& leecherTransfers.contains("\"seeding\":false"));
 
+			// --- /api/rpclog (live RPC activity — the nodes did bootstrap/find/store RPCs)
+			String rpc = http("GET", seedPort, "/api/rpclog").body;
+			check("rpclog returns events", rpc.contains("\"events\":["));
+			check("rpclog captured RPC types", rpc.contains("\"type\":\"")
+					&& (rpc.contains("FIND_NODE") || rpc.contains("STORE") || rpc.contains("PING")
+							|| rpc.contains("PONG") || rpc.contains("NODES")));
+			check("rpclog has a direction arrow", rpc.contains("\"dir\":\"→\"") || rpc.contains("\"dir\":\"←\""));
+
 			// unknown infohash -> 404
 			String bogus = NodeId.fromBytes("never-shared".getBytes(StandardCharsets.UTF_8)).toString();
 			check("download of unknown infohash -> 404",

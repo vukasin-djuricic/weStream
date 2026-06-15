@@ -3,7 +3,7 @@ import {
   buildPieces, peers, buildSwarm, shares, downloads,
   buildBuckets, storedKeys, rpcLog,
 } from "./data";
-import { useStatus, useRouting, useProgress, useTransfers, bucketsFromSizes, buildSwarmFrom, stripFromProgress, libraryFromTransfers, formatId, shortId, formatUptime } from "./hooks";
+import { useStatus, useRouting, useProgress, useTransfers, useRpcLog, bucketsFromSizes, buildSwarmFrom, stripFromProgress, libraryFromTransfers, rpcLogFromEvents, formatId, shortId, formatUptime } from "./hooks";
 import { share as apiShare, startDownload as apiDownload, streamUrl } from "./api";
 
 /* ------------------------------------------------------------------
@@ -82,6 +82,8 @@ export default function WeStreamApp() {
   const playerProgress = useProgress(currentInfohash);
   const transfers = useTransfers();
   const library = transfers.data ? libraryFromTransfers(transfers.data.transfers) : null;
+  const rpc = useRpcLog();
+  const liveRpcLog = rpc.data ? rpcLogFromEvents(rpc.data.events) : null;
   const connected = !!status.data;
   const buckets = routing.data ? bucketsFromSizes(routing.data.bucketSizes) : buildBuckets();
   const swarm = routing.data ? buildSwarmFrom(routing.data.contacts) : buildSwarm();
@@ -182,7 +184,7 @@ export default function WeStreamApp() {
           {screen === "add" && <AddStreamScreen
             onStream={(ih) => { setCurrentInfohash(ih); setScreen("player"); }}
             onDownloaded={(ih) => setCurrentInfohash(ih)} />}
-          {screen === "dht" && <DhtScreen buckets={buckets} status={status.data} routing={routing.data} />}
+          {screen === "dht" && <DhtScreen buckets={buckets} status={status.data} routing={routing.data} rpcEvents={liveRpcLog} />}
         </main>
       </div>
     </div>
@@ -596,12 +598,13 @@ function AddStreamScreen({ onStream, onDownloaded }) {
 }
 
 /* ===================== DHT INSPECTOR ===================== */
-function DhtScreen({ buckets, status, routing }) {
+function DhtScreen({ buckets, status, routing, rpcEvents }) {
   const nodeId = status ? formatId(status.nodeId) : "4287ad37 811db73f 862115ba 0960cc6c 9d54569e";
   const endpoint = status
     ? `udp://${status.host}:${status.udpPort} · up ${formatUptime(status.uptimeMs)}`
     : "udp://127.0.0.1:1100 · seed node · up 14m 22s";
   const contactCount = routing ? routing.contacts.length : 38;
+  const log = rpcEvents || rpcLog; // live events, or the mock until the first poll
   return (
     <section style={css("padding:22px 24px 30px")}>
       <div style={css("margin-bottom:18px")}>
@@ -665,7 +668,7 @@ function DhtScreen({ buckets, status, routing }) {
             <span style={css("display:flex;align-items:center;gap:7px;font:600 10px 'JetBrains Mono';color:#74e3b0")}><span style={css("width:6px;height:6px;border-radius:50%;background:#46d39a;animation:wsPulse 1.6s infinite")} />live</span>
           </div>
           <div style={css("padding:8px 6px")}>
-            {rpcLog.map((r, i) => (
+            {log.map((r, i) => (
               <div key={i} style={css("display:grid;grid-template-columns:64px 16px 88px 1fr auto;gap:9px;align-items:center;padding:6px 12px;font:500 11px 'JetBrains Mono'")}>
                 <span style={{ color: "#5f5670" }}>{r.time}</span>
                 <span style={{ color: r.dirColor, fontWeight: 700 }}>{r.dir}</span>
