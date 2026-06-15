@@ -3,8 +3,8 @@ import {
   buildPieces, peers, buildSwarm, shares, downloads,
   buildBuckets, storedKeys, rpcLog,
 } from "./data";
-import { useStatus, useRouting, bucketsFromSizes, buildSwarmFrom, formatId, shortId, formatUptime } from "./hooks";
-import { share as apiShare, startDownload as apiDownload } from "./api";
+import { useStatus, useRouting, useProgress, bucketsFromSizes, buildSwarmFrom, stripFromProgress, formatId, shortId, formatUptime } from "./hooks";
+import { share as apiShare, startDownload as apiDownload, streamUrl } from "./api";
 
 /* ------------------------------------------------------------------
    weStream — Phase 5 Player  (Direction A · Midnight Neon)
@@ -74,17 +74,19 @@ const NAV = [
 
 export default function WeStreamApp() {
   const [screen, setScreen] = useState("player");
-  const [currentInfohash, setCurrentInfohash] = useState(null); // set by Add-Stream, streamed by Player (Increment 8)
-  const pieces = buildPieces();
+  const [currentInfohash, setCurrentInfohash] = useState(null); // set by Add-Stream, streamed by Player
 
   // ---- live engine data (falls back to mock until the first fetch lands) ----
   const status = useStatus();
   const routing = useRouting();
+  const playerProgress = useProgress(currentInfohash);
   const connected = !!status.data;
   const buckets = routing.data ? bucketsFromSizes(routing.data.bucketSizes) : buildBuckets();
   const swarm = routing.data ? buildSwarmFrom(routing.data.contacts) : buildSwarm();
   const peerCount = status.data ? status.data.peerCount : 24;
   const youLabel = status.data ? shortId(status.data.nodeId) : "4287ad37";
+  const prog = playerProgress.data;
+  const pieces = (prog && prog.active && prog.pieceStates) ? stripFromProgress(prog) : buildPieces();
 
   return (
     <div className="ws-scroll" style={css("height:100vh;display:flex;flex-direction:column;background:#0f0d15;color:#f4f1f8;font-family:'Manrope',system-ui,sans-serif;overflow:hidden")}>
@@ -172,7 +174,7 @@ export default function WeStreamApp() {
 
         {/* ===== MAIN ===== */}
         <main className="ws-scroll" style={css("flex:1;min-width:0;overflow:auto;background:radial-gradient(1100px 600px at 78% -8%, rgba(198,79,240,0.07), transparent 60%), #0f0d15")}>
-          {screen === "player" && <PlayerScreen pieces={pieces} onSwarm={() => setScreen("swarm")} />}
+          {screen === "player" && <PlayerScreen pieces={pieces} infohash={currentInfohash} progress={prog} swarm={swarm} peerCount={peerCount} onSwarm={() => setScreen("swarm")} onAdd={() => setScreen("add")} />}
           {screen === "swarm" && <SwarmScreen swarm={swarm} peerCount={peerCount} youLabel={youLabel} />}
           {screen === "home" && <LibraryScreen onPlayer={() => setScreen("player")} onAdd={() => setScreen("add")} />}
           {screen === "add" && <AddStreamScreen
@@ -186,20 +188,24 @@ export default function WeStreamApp() {
 }
 
 /* ===================== PLAYER ===================== */
-function PlayerScreen({ pieces, onSwarm }) {
+function PlayerScreen({ pieces, infohash, progress, swarm = [], peerCount = 0, onSwarm, onAdd }) {
+  const total = progress ? progress.total : 0;
+  const have = progress ? progress.have : 0;
+  const inFlight = progress ? progress.inFlight : 0;
+  const frac = total > 0 ? have / total : 0;
+  const pct = Math.round(frac * 100) + "%";
   return (
     <section style={css("display:flex;min-height:100%")}>
       <div style={css("flex:1;min-width:0;padding:22px 24px;display:flex;flex-direction:column")}>
         <div style={css("display:flex;align-items:flex-start;justify-content:space-between;gap:16px;margin-bottom:16px")}>
           <div>
             <div style={css("display:flex;align-items:center;gap:10px;margin-bottom:6px")}>
-              <h1 style={css("margin:0;font-size:21px;font-weight:800;letter-spacing:-0.02em")}>Tears of Steel</h1>
-              <span style={css("font:700 10px 'JetBrains Mono';color:#74e3b0;background:rgba(70,211,154,0.12);border:1px solid rgba(70,211,154,0.3);padding:3px 8px;border-radius:6px;letter-spacing:0.08em")}>STREAMING</span>
+              <h1 style={css("margin:0;font-size:21px;font-weight:800;letter-spacing:-0.02em")}>{infohash ? "Now streaming" : "No stream selected"}</h1>
+              {infohash && <span style={css("font:700 10px 'JetBrains Mono';color:#74e3b0;background:rgba(70,211,154,0.12);border:1px solid rgba(70,211,154,0.3);padding:3px 8px;border-radius:6px;letter-spacing:0.08em")}>STREAMING</span>}
             </div>
             <div style={css("display:flex;align-items:center;gap:12px;font-family:'JetBrains Mono',monospace;font-size:11.5px;color:#756c85")}>
-              <span>2160p · HEVC</span><span style={{ color: "#322b40" }}>|</span>
-              <span>1.74 GB</span><span style={{ color: "#322b40" }}>|</span>
-              <span>infohash 9f2a…c081</span>
+              {total > 0 && <><span>{total} pieces</span><span style={{ color: "#322b40" }}>|</span><span>{pct} have</span><span style={{ color: "#322b40" }}>|</span></>}
+              <span>infohash {infohash ? shortId(infohash) : "—"}</span>
             </div>
           </div>
           <div style={css("display:flex;gap:8px")}>
@@ -209,29 +215,30 @@ function PlayerScreen({ pieces, onSwarm }) {
           </div>
         </div>
 
-        {/* video surface — mount vlcj / <video> here */}
-        <div style={css("position:relative;aspect-ratio:16/9;border-radius:16px;overflow:hidden;background:repeating-linear-gradient(135deg,#14111c,#14111c 11px,#171320 11px,#171320 22px);border:1px solid #272131;display:flex;align-items:center;justify-content:center")}>
-          <div style={css("position:absolute;inset:0;background:radial-gradient(420px 240px at 50% 42%, rgba(198,79,240,0.10), transparent 70%)")} />
-          <div style={css("position:relative;display:flex;flex-direction:column;align-items:center;gap:14px")}>
-            <div style={css("width:64px;height:64px;border-radius:50%;background:rgba(198,79,240,0.14);border:1px solid rgba(198,79,240,0.4);display:flex;align-items:center;justify-content:center;animation:wsGlow 3s infinite")}>
-              <svg width="26" height="26" viewBox="0 0 24 24"><path d="M8 5.5l11 6.5-11 6.5z" fill="#f4f1f8" /></svg>
+        {/* video surface — HTML5 <video> streams /stream/<infohash> (Range/206 from the engine; seeks move the playhead) */}
+        <div style={css("position:relative;aspect-ratio:16/9;border-radius:16px;overflow:hidden;background:#000;border:1px solid #272131;display:flex;align-items:center;justify-content:center")}>
+          {infohash ? (
+            <video key={infohash} src={streamUrl(infohash)} controls autoPlay
+              style={{ width: "100%", height: "100%", objectFit: "contain", background: "#000" }} />
+          ) : (
+            <div style={css("position:relative;display:flex;flex-direction:column;align-items:center;gap:14px")}>
+              <div style={css("position:absolute;inset:-40px;background:radial-gradient(420px 240px at 50% 42%, rgba(198,79,240,0.10), transparent 70%)")} />
+              <div style={css("position:relative;width:64px;height:64px;border-radius:50%;background:rgba(198,79,240,0.14);border:1px solid rgba(198,79,240,0.4);display:flex;align-items:center;justify-content:center;animation:wsGlow 3s infinite")}>
+                <svg width="26" height="26" viewBox="0 0 24 24"><path d="M8 5.5l11 6.5-11 6.5z" fill="#f4f1f8" /></svg>
+              </div>
+              <span style={css("position:relative;font-family:'JetBrains Mono',monospace;font-size:11px;color:#756c85;letter-spacing:0.05em")}>No stream selected</span>
+              <Hover as="button" onClick={onAdd} base="position:relative;padding:8px 16px;background:#1c1826;border:1px solid #2c2638;border-radius:10px;color:#c7bfd6;font:600 12px 'Manrope';cursor:pointer" hover="background:#252031">Go to Add a stream →</Hover>
             </div>
-            <span style={css("font-family:'JetBrains Mono',monospace;font-size:11px;color:#756c85;letter-spacing:0.05em")}>2160p video surface · libVLC</span>
-          </div>
-          <div style={css("position:absolute;top:14px;left:14px;display:flex;align-items:center;gap:7px;padding:5px 10px;background:rgba(15,13,21,0.72);backdrop-filter:blur(6px);border:1px solid #2c2638;border-radius:8px;font-family:'JetBrains Mono',monospace;font-size:10.5px;color:#b3aac0")}>
-            <span style={css("width:6px;height:6px;border-radius:50%;background:#6cc8e8")} /> buffer 6.2s ahead
-          </div>
+          )}
         </div>
 
-        {/* scrubber */}
+        {/* download buffer bar (playback seeking lives in the native <video> controls above) */}
         <div style={{ marginTop: 16 }}>
           <div style={css("position:relative;height:6px;border-radius:999px;background:#221d2c")}>
-            <div style={css("position:absolute;left:0;top:0;bottom:0;width:58%;border-radius:999px;background:rgba(108,200,232,0.32)")} />
-            <div style={css("position:absolute;left:0;top:0;bottom:0;width:45.5%;border-radius:999px;background:linear-gradient(90deg,#9b3ec9,#c64ff0)")} />
-            <div style={css("position:absolute;left:45.5%;top:50%;width:14px;height:14px;border-radius:50%;background:#f4f1f8;transform:translate(-50%,-50%);box-shadow:0 0 0 4px rgba(198,79,240,0.25)")} />
+            <div style={css("position:absolute;left:0;top:0;bottom:0;border-radius:999px;background:linear-gradient(90deg,#9b3ec9,#c64ff0);width:" + pct)} />
           </div>
           <div style={css("display:flex;justify-content:space-between;margin-top:7px;font-family:'JetBrains Mono',monospace;font-size:11px;color:#756c85")}>
-            <span style={{ color: "#c7bfd6" }}>00:42:13</span><span>−00:50:42</span>
+            <span style={{ color: "#c7bfd6" }}>{infohash ? "downloaded " + pct : "—"}</span><span>{total > 0 ? have + "/" + total + " pieces" : ""}</span>
           </div>
         </div>
 
@@ -254,7 +261,7 @@ function PlayerScreen({ pieces, onSwarm }) {
             ))}
           </div>
           <div style={css("display:flex;justify-content:space-between;margin-top:9px;font-family:'JetBrains Mono',monospace;font-size:10px;color:#5f5670")}>
-            <span>piece 612 · playhead</span><span>requesting 8 · window end 644</span>
+            <span>{have}/{total} have</span><span>requesting {inFlight}</span>
           </div>
         </div>
       </div>
@@ -263,7 +270,7 @@ function PlayerScreen({ pieces, onSwarm }) {
       <aside className="ws-scroll" style={css("width:322px;flex-shrink:0;border-left:1px solid #221d2c;background:#131019;padding:20px 18px;display:flex;flex-direction:column;gap:16px;overflow:auto")}>
         <div style={css("display:flex;align-items:center;justify-content:space-between")}>
           <h2 style={css("margin:0;font-size:14px;font-weight:800")}>Live swarm</h2>
-          <span style={css("font:600 11px 'JetBrains Mono';color:#c64ff0;background:rgba(198,79,240,0.13);padding:3px 9px;border-radius:999px")}>24 peers</span>
+          <span style={css("font:600 11px 'JetBrains Mono';color:#c64ff0;background:rgba(198,79,240,0.13);padding:3px 9px;border-radius:999px")}>{peerCount} peers</span>
         </div>
         <div style={css("display:flex;gap:10px")}>
           {[["DOWNLOAD", "11.4", "#6cc8e8"], ["UPLOAD", "3.2", "#ee7fb0"]].map(([l, v, c]) => (
@@ -274,16 +281,19 @@ function PlayerScreen({ pieces, onSwarm }) {
           ))}
         </div>
         <div style={css("display:flex;flex-direction:column;gap:8px")}>
-          {peers.map((pr) => (
+          {swarm.length === 0 && (
+            <div style={css("padding:16px;text-align:center;font:500 11.5px 'JetBrains Mono';color:#5f5670;background:#15111d;border:1px solid #221d2c;border-radius:12px")}>no peers connected yet</div>
+          )}
+          {swarm.map((pr) => (
             <Hover key={pr.id} base="display:flex;align-items:center;gap:11px;padding:10px 11px;background:#15111d;border:1px solid #221d2c;border-radius:12px" hover="border-color:#3a3148">
               <span style={css("width:30px;height:30px;flex-shrink:0;border-radius:9px;display:flex;align-items:center;justify-content:center;font:700 11px 'JetBrains Mono';color:#0f0d15;background:" + pr.tint)}>{pr.glyph}</span>
               <div style={css("flex:1;min-width:0")}>
                 <div style={css("display:flex;align-items:center;gap:7px")}>
-                  <span style={css("font-family:'JetBrains Mono',monospace;font-size:11.5px;color:#e7e1ef;font-weight:600")}>{pr.id}</span>
+                  <span style={css("font-family:'JetBrains Mono',monospace;font-size:11.5px;color:#e7e1ef;font-weight:600")}>{pr.id.length > 12 ? pr.id.slice(0, 10) + "…" : pr.id}</span>
                   <span style={css("font-size:10px;color:#5f5670")}>{pr.loc}</span>
                 </div>
                 <div style={css("margin-top:5px;height:4px;border-radius:999px;background:#221d2c;overflow:hidden")}>
-                  <div style={css("height:100%;background:linear-gradient(90deg,#9b3ec9,#c64ff0);width:" + pr.havePct)} />
+                  <div style={css("height:100%;background:linear-gradient(90deg,#9b3ec9,#c64ff0);width:" + pr.have)} />
                 </div>
               </div>
               <div style={css("text-align:right;flex-shrink:0")}>

@@ -6,7 +6,7 @@
 // screen falls back to its mock.
 
 import { useEffect, useRef, useState } from "react";
-import { getStatus, getRouting } from "./api";
+import { getStatus, getRouting, getProgress } from "./api";
 
 /**
  * Poll `fetchFn` every `intervalMs`. Returns { data, error }. Uses a setTimeout
@@ -45,6 +45,10 @@ export function usePoll(fetchFn, intervalMs) {
 
 export const useStatus = () => usePoll(getStatus, 1000);
 export const useRouting = () => usePoll(getRouting, 1000);
+
+/** Poll a download's live progress at 500ms (faster — it drives the piece strip). No-op when infohash is null. */
+export const useProgress = (infohash) =>
+  usePoll(() => (infohash ? getProgress(infohash) : Promise.resolve(null)), 500);
 
 // ----------------------------------------------------------------- transforms
 
@@ -91,6 +95,32 @@ function hashHex(id) {
   let h = 0;
   for (let i = 0; i < id.length; i++) h = (h * 31 + id.charCodeAt(i)) >>> 0;
   return h;
+}
+
+// Per-piece state byte → strip colour: 0 missing, 1 in-flight, 2 have.
+const PIECE_COLORS = ["#2a2435", "#6cc8e8", "#c64ff0"];
+
+/**
+ * /api/progress pieceStates → the strip's {idx,color} bars. Caps the bar count
+ * (a real file has thousands of pieces): when over maxBars, downsample into
+ * buckets — a bucket shows the WORST state it covers (missing > in-flight > have),
+ * so any gap stays visible.
+ */
+export function stripFromProgress(progress, maxBars = 96) {
+  const states = progress.pieceStates || [];
+  const n = states.length;
+  if (n === 0) return [];
+  if (n <= maxBars) return states.map((s, i) => ({ idx: i, color: PIECE_COLORS[s] }));
+  const bars = [];
+  const per = n / maxBars;
+  for (let b = 0; b < maxBars; b++) {
+    const start = Math.floor(b * per);
+    const end = Math.floor((b + 1) * per);
+    let worst = 2;
+    for (let i = start; i < end; i++) worst = Math.min(worst, states[i]);
+    bars.push({ idx: start, color: PIECE_COLORS[worst] });
+  }
+  return bars;
 }
 
 /** /api/routing contacts → the swarm-node shape SwarmScreen renders (polar layout + cosmetics). */
