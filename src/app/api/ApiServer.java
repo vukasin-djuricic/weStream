@@ -90,6 +90,7 @@ public final class ApiServer implements Closeable {
 		this.server.createContext("/api/share", this::handleShare);
 		this.server.createContext("/api/download", this::handleDownload);
 		this.server.createContext("/api/progress", this::handleProgress);
+		this.server.createContext("/api/transfers", this::handleTransfers);
 		this.server.createContext("/stream", this::handleStream);
 	}
 
@@ -307,6 +308,31 @@ public final class ApiServer implements Closeable {
 				.num("peers", p.peers())
 				.byteArray("pieceStates", p.pieceStates())
 				.end());
+	}
+
+	/**
+	 * {@code GET /api/transfers} — the live Library list: every file this node seeds
+	 * or is downloading, with a progress snapshot for downloads.
+	 */
+	private void handleTransfers(HttpExchange ex) throws IOException {
+		if (!requireGet(ex)) {
+			return;
+		}
+		List<String> items = new ArrayList<>();
+		for (TransferService.Transfer t : transfer.transfers()) {
+			items.add(new Json()
+					.str("infohash", t.infohash())
+					.str("name", t.name())
+					.num("totalLength", t.totalLength())
+					.num("pieceCount", t.pieceCount())
+					.bool("seeding", t.seeding())
+					.num("have", t.have())
+					.num("total", t.total())
+					.num("peers", t.peers())
+					.bool("complete", t.complete())
+					.end());
+		}
+		sendJson(ex, 200, new Json().raw("transfers", Json.array(items)).end());
 	}
 
 	/**

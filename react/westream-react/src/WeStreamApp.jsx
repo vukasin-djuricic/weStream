@@ -3,7 +3,7 @@ import {
   buildPieces, peers, buildSwarm, shares, downloads,
   buildBuckets, storedKeys, rpcLog,
 } from "./data";
-import { useStatus, useRouting, useProgress, bucketsFromSizes, buildSwarmFrom, stripFromProgress, formatId, shortId, formatUptime } from "./hooks";
+import { useStatus, useRouting, useProgress, useTransfers, bucketsFromSizes, buildSwarmFrom, stripFromProgress, libraryFromTransfers, formatId, shortId, formatUptime } from "./hooks";
 import { share as apiShare, startDownload as apiDownload, streamUrl } from "./api";
 
 /* ------------------------------------------------------------------
@@ -80,6 +80,8 @@ export default function WeStreamApp() {
   const status = useStatus();
   const routing = useRouting();
   const playerProgress = useProgress(currentInfohash);
+  const transfers = useTransfers();
+  const library = transfers.data ? libraryFromTransfers(transfers.data.transfers) : null;
   const connected = !!status.data;
   const buckets = routing.data ? bucketsFromSizes(routing.data.bucketSizes) : buildBuckets();
   const swarm = routing.data ? buildSwarmFrom(routing.data.contacts) : buildSwarm();
@@ -176,7 +178,7 @@ export default function WeStreamApp() {
         <main className="ws-scroll" style={css("flex:1;min-width:0;overflow:auto;background:radial-gradient(1100px 600px at 78% -8%, rgba(198,79,240,0.07), transparent 60%), #0f0d15")}>
           {screen === "player" && <PlayerScreen pieces={pieces} infohash={currentInfohash} progress={prog} swarm={swarm} peerCount={peerCount} onSwarm={() => setScreen("swarm")} onAdd={() => setScreen("add")} />}
           {screen === "swarm" && <SwarmScreen swarm={swarm} peerCount={peerCount} youLabel={youLabel} />}
-          {screen === "home" && <LibraryScreen onPlayer={() => setScreen("player")} onAdd={() => setScreen("add")} />}
+          {screen === "home" && <LibraryScreen library={library} onPlayer={() => setScreen("player")} onAdd={() => setScreen("add")} onPlay={(ih) => { setCurrentInfohash(ih); setScreen("player"); }} />}
           {screen === "add" && <AddStreamScreen
             onStream={(ih) => { setCurrentInfohash(ih); setScreen("player"); }}
             onDownloaded={(ih) => setCurrentInfohash(ih)} />}
@@ -399,9 +401,9 @@ function SwarmScreen({ swarm, peerCount = 24, youLabel = "4287ad37" }) {
 }
 
 /* ===================== LIBRARY ===================== */
-function MediaCard({ it }) {
+function MediaCard({ it, onPlay }) {
   return (
-    <Hover base="background:#15111d;border:1px solid #221d2c;border-radius:14px;overflow:hidden;cursor:pointer" hover="border-color:#3a3148">
+    <Hover onClick={() => it.infohash && onPlay && onPlay(it.infohash)} base="background:#15111d;border:1px solid #221d2c;border-radius:14px;overflow:hidden;cursor:pointer" hover="border-color:#3a3148">
       <div style={css("position:relative;aspect-ratio:16/10;display:flex;align-items:center;justify-content:center;background:" + it.posterBg)}>
         <span style={css("font:600 9.5px 'JetBrains Mono';color:#5f5670")}>poster</span>
         <span style={css("position:absolute;top:9px;left:9px;font:700 9px 'JetBrains Mono';color:#cfc6dd;background:rgba(15,13,21,0.72);padding:2px 7px;border-radius:5px")}>{it.res}</span>
@@ -418,8 +420,11 @@ function MediaCard({ it }) {
   );
 }
 
-function LibraryScreen({ onPlayer, onAdd }) {
+function LibraryScreen({ library, onPlayer, onAdd, onPlay }) {
   const grid = css("display:grid;grid-template-columns:repeat(auto-fill,minmax(230px,1fr));gap:14px");
+  const myShares = library ? library.shares : shares;       // live or mock fallback
+  const myDownloads = library ? library.downloads : downloads;
+  const empty = css("padding:24px;font:500 12.5px 'JetBrains Mono';color:#5f5670;background:#15111d;border:1px dashed #221d2c;border-radius:12px");
   return (
     <section style={css("padding:22px 24px 30px")}>
       <div style={css("display:flex;align-items:center;justify-content:space-between;gap:16px;margin-bottom:20px")}>
@@ -456,10 +461,14 @@ function LibraryScreen({ onPlayer, onAdd }) {
       </Hover>
 
       <div style={css("font-size:13px;font-weight:800;letter-spacing:-0.01em;margin-bottom:13px;display:flex;align-items:center;gap:9px")}>Your shares <span style={css("font:600 11px 'JetBrains Mono';color:#74e3b0;background:rgba(70,211,154,0.1);padding:2px 8px;border-radius:999px")}>seeding</span></div>
-      <div style={{ ...grid, marginBottom: 28 }}>{shares.map((it) => <MediaCard key={it.title} it={it} />)}</div>
+      {myShares.length === 0
+        ? <div style={{ ...empty, marginBottom: 28 }}>Nothing shared yet — share a file from Add a stream.</div>
+        : <div style={{ ...grid, marginBottom: 28 }}>{myShares.map((it) => <MediaCard key={it.infohash || it.title} it={it} onPlay={onPlay} />)}</div>}
 
       <div style={css("font-size:13px;font-weight:800;letter-spacing:-0.01em;margin-bottom:13px")}>Downloads</div>
-      <div style={grid}>{downloads.map((it) => <MediaCard key={it.title} it={it} />)}</div>
+      {myDownloads.length === 0
+        ? <div style={empty}>No downloads yet — resolve an infohash from Add a stream.</div>
+        : <div style={grid}>{myDownloads.map((it) => <MediaCard key={it.infohash || it.title} it={it} onPlay={onPlay} />)}</div>}
     </section>
   );
 }

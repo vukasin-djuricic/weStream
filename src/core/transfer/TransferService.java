@@ -47,6 +47,19 @@ public final class TransferService implements Closeable {
 	private final List<PieceStore> stores = new CopyOnWriteArrayList<>();
 	/** Live, non-blocking downloads keyed by infohash (the Phase-5 UI polls these via progress()). */
 	private final Map<NodeId, DownloadSession> active = new ConcurrentHashMap<>();
+	/** Display names (file names) for shares and downloads, for the Library list. */
+	private final Map<NodeId, String> sharedNames = new ConcurrentHashMap<>();
+	private final Map<NodeId, String> downloadNames = new ConcurrentHashMap<>();
+
+	/**
+	 * One row of the Library list (a file this node seeds or is downloading). Pure
+	 * data for the {@code /api/transfers} endpoint; {@code have}/{@code total}/
+	 * {@code peers}/{@code complete} are a live snapshot for downloads (a seed reads
+	 * have==total, complete==true).
+	 */
+	public record Transfer(String infohash, String name, long totalLength, int pieceCount,
+			boolean seeding, int have, int total, int peers, boolean complete) {
+	}
 
 	public TransferService(KademliaService dht) {
 		this.dht = dht;
@@ -73,6 +86,8 @@ public final class TransferService implements Closeable {
 		stores.add(store);
 		seeds.add(seed);
 		servers.add(server);
+		Path name = file.getFileName();
+		sharedNames.put(meta.infohash(), name != null ? name.toString() : meta.infohash().toString());
 
 		dht.storeValue(meta.infohash(), encodeAnnounce(meta, host, server.getLocalPort()));
 		return meta;
@@ -129,6 +144,8 @@ public final class TransferService implements Closeable {
 				a.meta, out, selfId, new SlidingWindowPicker(a.meta.pieceCount(), STREAM_WINDOW), MAX_IN_FLIGHT);
 		dl.addPeer(new Socket(a.host, a.port));
 		active.put(infohash, dl);
+		Path name = out.getFileName();
+		downloadNames.put(infohash, name != null ? name.toString() : infohash.toString());
 		return dl;
 	}
 
@@ -149,6 +166,32 @@ public final class TransferService implements Closeable {
 			}
 		}
 		return null;
+	}
+
+	/**
+	 * Snapshot of every file this node seeds (from {@code share}) or is downloading
+	 * (from {@code startDownload}) — the live Library list. Seeds report a full
+	 * bitfield; downloads carry a live {@link DownloadSession#progress()} snapshot.
+	 */
+	public List<Transfer> transfers() {
+		List<Transfer> out = new ArrayList<>();
+		for (PieceStore s : stores) {
+			TorrentMetadata m = s.metadata();
+			NodeId ih = m.infohash();
+			out.add(new Transfer(ih.toString(), sharedNames.getOrDefault(ih, ih.toString()),
+					m.totalLength(), m.pieceCount(), true,
+					m.pieceCount(), m.pieceCount(), 0, true));
+		}
+		for (Map.Entry<NodeId, DownloadSession> e : active.entrySet()) {
+			NodeId ih = e.getKey();
+			DownloadSession dl = e.getValue();
+			TorrentMetadata m = dl.store().metadata();
+			DownloadSession.Progress p = dl.progress();
+			out.add(new Transfer(ih.toString(), downloadNames.getOrDefault(ih, ih.toString()),
+					m.totalLength(), m.pieceCount(), false,
+					p.have(), p.total(), p.peers(), dl.isComplete()));
+		}
+		return out;
 	}
 
 	// ----------------------------------------------------------- announce codec

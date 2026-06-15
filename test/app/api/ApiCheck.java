@@ -270,6 +270,16 @@ public class ApiCheck {
 			check("progress reaches complete", complete);
 			check("downloaded file byte-identical", Arrays.equals(Files.readAllBytes(out), content));
 
+			// --- /api/transfers (live Library list)
+			String seederTransfers = http("GET", seedPort, "/api/transfers").body;
+			check("seeder /api/transfers lists the share",
+					seederTransfers.contains("\"infohash\":\"" + infohash + "\""));
+			check("seeder transfer marked seeding", seederTransfers.contains("\"seeding\":true"));
+			String leecherTransfers = http("GET", leechPort, "/api/transfers").body;
+			check("leecher /api/transfers lists the download (seeding:false)",
+					leecherTransfers.contains("\"infohash\":\"" + infohash + "\"")
+							&& leecherTransfers.contains("\"seeding\":false"));
+
 			// unknown infohash -> 404
 			String bogus = NodeId.fromBytes("never-shared".getBytes(StandardCharsets.UTF_8)).toString();
 			check("download of unknown infohash -> 404",

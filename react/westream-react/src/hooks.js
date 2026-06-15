@@ -6,7 +6,7 @@
 // screen falls back to its mock.
 
 import { useEffect, useRef, useState } from "react";
-import { getStatus, getRouting, getProgress } from "./api";
+import { getStatus, getRouting, getProgress, getTransfers } from "./api";
 
 /**
  * Poll `fetchFn` every `intervalMs`. Returns { data, error }. Uses a setTimeout
@@ -49,6 +49,46 @@ export const useRouting = () => usePoll(getRouting, 1000);
 /** Poll a download's live progress at 500ms (faster — it drives the piece strip). No-op when infohash is null. */
 export const useProgress = (infohash) =>
   usePoll(() => (infohash ? getProgress(infohash) : Promise.resolve(null)), 500);
+
+/** Poll the Library list (files this node seeds/downloads) at 1.5s. */
+export const useTransfers = () => usePoll(getTransfers, 1500);
+
+/** bytes → "1.74 GB" / "691 MB" / "480 KB". */
+export function humanBytes(n) {
+  if (n >= 1 << 30) return (n / (1 << 30)).toFixed(2) + " GB";
+  if (n >= 1 << 20) return (n / (1 << 20)).toFixed(0) + " MB";
+  if (n >= 1 << 10) return (n / (1 << 10)).toFixed(0) + " KB";
+  return n + " B";
+}
+
+/**
+ * /api/transfers rows → the MediaCard shape the Library renders, split into
+ * { shares, downloads }. Mirrors the mock status/colour helpers from data.js.
+ */
+export function libraryFromTransfers(transfers) {
+  const POSTER = "linear-gradient(135deg,#2c1838,#15111d)";
+  const toCard = (t) => {
+    const pct = t.total > 0 ? Math.round((t.have / t.total) * 100) + "%" : "0%";
+    const ext = (t.name.includes(".") ? t.name.split(".").pop() : "FILE").toUpperCase().slice(0, 5);
+    let status;
+    if (t.seeding) status = { status: "▲ Seeding", statusColor: "#74e3b0", statusBg: "rgba(70,211,154,0.14)", prog: "100%", progColor: "#46d39a" };
+    else if (t.complete) status = { status: "✓ Complete", statusColor: "#a99fbb", statusBg: "rgba(120,108,140,0.18)", prog: "100%", progColor: "#6cc8e8" };
+    else status = { status: pct + " ↓", statusColor: "#e7b0f0", statusBg: "rgba(198,79,240,0.16)", prog: pct, progColor: "linear-gradient(90deg,#9b3ec9,#c64ff0)" };
+    return {
+      title: t.name,
+      res: ext,
+      size: humanBytes(t.totalLength),
+      peersLabel: t.peers + " peers",
+      posterBg: POSTER,
+      infohash: t.infohash,
+      ...status,
+    };
+  };
+  return {
+    shares: transfers.filter((t) => t.seeding).map(toCard),
+    downloads: transfers.filter((t) => !t.seeding).map(toCard),
+  };
+}
 
 // ----------------------------------------------------------------- transforms
 
