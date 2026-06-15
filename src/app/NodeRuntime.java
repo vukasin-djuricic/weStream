@@ -1,8 +1,9 @@
 package app;
 
 import java.io.Closeable;
-import java.net.SocketException;
+import java.io.IOException;
 
+import app.api.ApiServer;
 import core.kademlia.Contact;
 import core.kademlia.KademliaService;
 import core.kademlia.UdpTransport;
@@ -27,9 +28,16 @@ import core.transfer.TransferService;
  */
 public final class NodeRuntime implements Closeable {
 
+	/** Base TCP port for the local HTTP API; the node's API port is this + (udpPort - 1100). */
+	private static final int API_PORT_BASE = 11470;
+	/** UDP port of node 0 (the seed); used to derive the API port offset from a node's UDP port. */
+	private static final int SEED_UDP_PORT = 1100;
+
 	private final UdpTransport transport;
 	private final KademliaService kademlia;
 	private final TransferService transferService;
+	private final ApiServer api;
+	private final int apiPort;
 	private final int port;
 	private final boolean seed;
 	private final String seedHost;
@@ -40,10 +48,11 @@ public final class NodeRuntime implements Closeable {
 	 * Bind the UDP port and start the Kademlia + transfer stack (but do not join
 	 * the network yet — call {@link #joinNetwork()} once a front-end is ready).
 	 *
-	 * @throws SocketException if {@code port} cannot be bound
+	 * @throws SocketException if the UDP {@code port} cannot be bound
+	 * @throws IOException     if the local HTTP API port cannot be bound
 	 */
 	public NodeRuntime(String host, int port, boolean seed, String seedHost, int seedPort)
-			throws SocketException {
+			throws IOException {
 		this.port = port;
 		this.seed = seed;
 		this.seedHost = seedHost;
@@ -52,6 +61,12 @@ public final class NodeRuntime implements Closeable {
 		this.kademlia = new KademliaService(host, port, transport);
 		this.kademlia.start();
 		this.transferService = new TransferService(kademlia);
+
+		// Local HTTP control API (loopback only) — the Phase-5 Electron/React seam.
+		// Lives in app.api (not core.*), so the engine's zero-dependency rule holds.
+		this.apiPort = API_PORT_BASE + (port - SEED_UDP_PORT);
+		this.api = new ApiServer("127.0.0.1", apiPort, kademlia, port, this::uptimeMillis);
+		this.api.start();
 	}
 
 	/**
@@ -88,6 +103,11 @@ public final class NodeRuntime implements Closeable {
 		return port;
 	}
 
+	/** The local HTTP API port for this node ({@code 11470 + (udpPort - 1100)}). */
+	public int apiPort() {
+		return apiPort;
+	}
+
 	public boolean isSeed() {
 		return seed;
 	}
@@ -97,9 +117,10 @@ public final class NodeRuntime implements Closeable {
 		return System.currentTimeMillis() - startedAtMillis;
 	}
 
-	/** Closes the transfer service (shutting its TCP servers) and the UDP transport. */
+	/** Closes the HTTP API, the transfer service (shutting its TCP servers), and the UDP transport. */
 	@Override
 	public void close() {
+		api.close();
 		transferService.close();
 		transport.close();
 	}

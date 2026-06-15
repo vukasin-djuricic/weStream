@@ -1,6 +1,6 @@
 package app;
 
-import java.net.SocketException;
+import java.io.IOException;
 
 import cli.CLIParser;
 
@@ -54,8 +54,9 @@ public class ServentMain {
 		try {
 			runtime = new NodeRuntime("127.0.0.1", AppConfig.myPort,
 					AppConfig.isSeedNode, AppConfig.SEED_HOST, AppConfig.SEED_PORT);
-		} catch (SocketException e) {
-			AppConfig.timestampedErrorPrint("Couldn't bind UDP port " + AppConfig.myPort + ". Exiting...");
+		} catch (IOException e) {
+			AppConfig.timestampedErrorPrint("Couldn't bind node ports (UDP " + AppConfig.myPort
+					+ " / API) : " + e.getMessage() + ". Exiting...");
 			System.exit(0);
 		}
 
