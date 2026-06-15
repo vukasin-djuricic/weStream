@@ -454,6 +454,17 @@ public final class ApiServer implements Closeable {
 	}
 
 	private boolean requireMethod(HttpExchange ex, String method) throws IOException {
+		// Permissive CORS: this is a loopback-only companion API for the Electron/React
+		// renderer (a different origin: the Vite dev server, file://, or the <video> tag).
+		// Every handler enters through here, so this is the single CORS chokepoint.
+		ex.getResponseHeaders().add("Access-Control-Allow-Origin", "*");
+		if ("OPTIONS".equalsIgnoreCase(ex.getRequestMethod())) {
+			ex.getResponseHeaders().add("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
+			ex.getResponseHeaders().add("Access-Control-Allow-Headers", "Content-Type");
+			ex.sendResponseHeaders(204, -1);
+			ex.close();
+			return false; // preflight handled — the handler must stop
+		}
 		if (!method.equalsIgnoreCase(ex.getRequestMethod())) {
 			sendJson(ex, 405, "{\"error\":\"method not allowed\"}");
 			return false;

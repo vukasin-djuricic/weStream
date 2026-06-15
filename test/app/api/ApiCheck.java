@@ -130,6 +130,15 @@ public class ApiCheck {
 			// --- method enforcement
 			Response post = http("POST", p, "/api/status");
 			check("non-GET -> 405", post.code == 405);
+
+			// --- CORS (the renderer is a different origin): allow-origin + OPTIONS preflight
+			HttpURLConnection opt = (HttpURLConnection)
+					URI.create("http://127.0.0.1:" + p + "/api/status").toURL().openConnection();
+			opt.setRequestMethod("OPTIONS");
+			check("CORS preflight -> 204", opt.getResponseCode() == 204);
+			check("CORS allow-origin present",
+					"*".equals(opt.getHeaderField("Access-Control-Allow-Origin")));
+			opt.disconnect();
 		} finally {
 			api.close();
 			transfer.close();
