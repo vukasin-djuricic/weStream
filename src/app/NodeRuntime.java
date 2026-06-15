@@ -62,6 +62,12 @@ public final class NodeRuntime implements Closeable {
 		this.kademlia.start();
 		this.transferService = new TransferService(kademlia);
 
+		// Downloads are an ephemeral cache: wipe leftovers from a previous run now (covers a prior
+		// crash / SIGKILL where the hook below didn't fire), and again on JVM exit — which is how
+		// the Electron-spawned engine cleans up, since SIGTERM never calls our close()/CLI stop.
+		transferService.cleanCache();
+		Runtime.getRuntime().addShutdownHook(new Thread(transferService::cleanCache, "ws-cache-clean"));
+
 		// Local HTTP control API (loopback only) — the Phase-5 Electron/React seam.
 		// Lives in app.api (not core.*), so the engine's zero-dependency rule holds.
 		this.apiPort = API_PORT_BASE + (port - SEED_UDP_PORT);

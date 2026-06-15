@@ -2,6 +2,9 @@
 out/
 *.class
 
+# Ephemeral per-node download cache (wiped on startup/shutdown; never source)
+cache/
+
 # Gradle (wrapper jar/scripts ARE committed; build state is not)
 .gradle/
 build/

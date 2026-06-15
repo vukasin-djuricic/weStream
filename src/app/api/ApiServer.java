@@ -264,9 +264,10 @@ public final class ApiServer implements Closeable {
 			return;
 		}
 		String outStr = body.get("out");
+		// Default: the node's ephemeral cache (wiped on shutdown). Created lazily by startDownload.
 		Path out = (outStr != null && !outStr.isEmpty())
 				? Path.of(outStr)
-				: Path.of(System.getProperty("java.io.tmpdir"), "westream-" + infohash + ".bin");
+				: transfer.cacheDir().resolve(infohash + ".bin");
 
 		DownloadSession dl = transfer.startDownload(infohash, out);
 		if (dl == null) {

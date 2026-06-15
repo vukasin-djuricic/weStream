@@ -45,6 +45,7 @@ public class ApiCheck {
 		runGroup("dht endpoints (real localhost HTTP)", ApiCheck::dhtChecks);
 		runGroup("transfer endpoints (share/download/progress, real UDP+TCP+HTTP)", ApiCheck::transferChecks);
 		runGroup("stream endpoint (range/206 + watch-while-download, real)", ApiCheck::streamChecks);
+		runGroup("download cache (ephemeral, wiped) ", ApiCheck::cacheChecks);
 
 		System.out.println();
 		System.out.println(passed + " passed, " + failures.size() + " failed");
@@ -332,6 +333,7 @@ public class ApiCheck {
 		ApiServer seederApi = null;
 		ApiServer leecherApi = null;
 		Path src = null;
+		Path watchedOut = null;
 		try {
 			for (int i = 0; i < n; i++) {
 				UdpTransport t = new UdpTransport(0);
@@ -384,7 +386,10 @@ public class ApiCheck {
 			check("stream unknown infohash -> 404", httpStream(seedPort, "/stream/" + bogus, null).code == 404);
 
 			// --- watch-while-download: leecher streams the whole file WHILE downloading it
-			Response dl = http("POST", leechPort, "/api/download", new Json().str("infohash", ih).end());
+			// explicit temp out so the suite never writes into the real per-node cache dir
+			watchedOut = Files.createTempFile("westream-watch", ".bin");
+			Response dl = http("POST", leechPort, "/api/download",
+					new Json().str("infohash", ih).str("out", watchedOut.toString()).end());
 			check("leecher download started", dl.code == 200);
 			StreamResponse watched = httpStream(leechPort, "/stream/" + ih, null);
 			check("watch-while-download -> 200", watched.code == 200);
@@ -398,6 +403,80 @@ public class ApiCheck {
 			}
 			if (seederSvc != null) {
 				seederSvc.close();
+			}
+			if (leecherSvc != null) {
+				leecherSvc.close();
+			}
+			transports.forEach(UdpTransport::close);
+			if (src != null) {
+				Files.deleteIfExists(src);
+			}
+			if (watchedOut != null) {
+				Files.deleteIfExists(watchedOut);
+			}
+		}
+	}
+
+	/**
+	 * Ephemeral download cache: a download with no explicit out lands in the node's
+	 * per-node cache dir, and cleanCache() wipes it. Hermetic — injects temp cache
+	 * dirs so the repo's real {@code cache/} is never touched.
+	 */
+	private static void cacheChecks() throws Exception {
+		int n = 3;
+		List<UdpTransport> transports = new ArrayList<>();
+		List<KademliaService> nodes = new ArrayList<>();
+		TransferService seederSvc = null;
+		TransferService leecherSvc = null;
+		Path src = null;
+		try {
+			for (int i = 0; i < n; i++) {
+				UdpTransport t = new UdpTransport(0);
+				KademliaService s = new KademliaService("127.0.0.1", t.getLocalPort(), t);
+				s.start();
+				transports.add(t);
+				nodes.add(s);
+			}
+			for (int i = 1; i < n; i++) {
+				nodes.get(i).bootstrap(nodes.get(0).self());
+			}
+
+			// default cacheDir is the per-node folder under the app dir (path only — not created here)
+			TransferService def = new TransferService(nodes.get(0));
+			check("default cacheDir is <user.dir>/cache/node-<port>",
+					def.cacheDir().equals(Path.of(System.getProperty("user.dir"), "cache",
+							"node-" + nodes.get(0).self().getPort())));
+
+			Path seedCache = Files.createTempDirectory("ws-seedcache");
+			Path leechCache = Files.createTempDirectory("ws-leechcache");
+			seederSvc = new TransferService(nodes.get(0), seedCache);
+			leecherSvc = new TransferService(nodes.get(2), leechCache);
+
+			byte[] content = deterministicBytes(512 * 4 + 11, 4);
+			src = Files.createTempFile("ws-cache-src", ".bin");
+			Files.write(src, content);
+			TorrentMetadata meta = seederSvc.share(src, 512);
+
+			// download with NO explicit out -> goes into the leecher's cache dir
+			Path out = leecherSvc.cacheDir().resolve(meta.infohash() + ".bin");
+			var dl = leecherSvc.startDownload(meta.infohash(), out);
+			check("startDownload returns a session", dl != null);
+			check("download file is inside the cache dir", out.startsWith(leecherSvc.cacheDir()));
+			boolean done = false;
+			for (int i = 0; i < 100 && !done; i++) {
+				done = dl.isComplete();
+				if (!done) {
+					Thread.sleep(50);
+				}
+			}
+			check("cached download completes", done);
+			check("cache file exists on disk", Files.exists(out));
+
+			leecherSvc.cleanCache();
+			check("cleanCache deletes the cache dir + file", !Files.exists(out) && !Files.exists(leechCache));
+		} finally {
+			if (seederSvc != null) {
+				seederSvc.close(); // also cleanCache()s its (empty) temp dir
 			}
 			if (leecherSvc != null) {
 				leecherSvc.close();

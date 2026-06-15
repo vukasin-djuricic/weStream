@@ -7,12 +7,15 @@ import java.io.DataInputStream;
 import java.io.DataOutputStream;
 import java.io.IOException;
 import java.net.Socket;
+import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.stream.Stream;
 
 import core.kademlia.KademliaService;
 import core.kademlia.NodeId;
@@ -41,6 +44,8 @@ public final class TransferService implements Closeable {
 	private final KademliaService dht;
 	private final String host;
 	private final NodeId selfId;
+	/** Ephemeral per-node download cache (under the app folder); wiped on startup + shutdown. */
+	private final Path cacheDir;
 
 	private final List<TcpPeerServer> servers = new CopyOnWriteArrayList<>();
 	private final List<SeedSession> seeds = new CopyOnWriteArrayList<>();
@@ -62,9 +67,40 @@ public final class TransferService implements Closeable {
 	}
 
 	public TransferService(KademliaService dht) {
+		// Downloads are an ephemeral cache in the app folder (user.dir), one subdir per node so
+		// multiple local nodes (Electron windows) don't wipe each other's files.
+		this(dht, Path.of(System.getProperty("user.dir"), "cache", "node-" + dht.self().getPort()));
+	}
+
+	/** Test/embedding seam: inject the download cache directory (so checks never touch the real one). */
+	public TransferService(KademliaService dht, Path cacheDir) {
 		this.dht = dht;
 		this.host = dht.self().getHost();
 		this.selfId = dht.self().getId();
+		this.cacheDir = cacheDir;
+	}
+
+	/** The per-node ephemeral download cache directory (default output location for downloads). */
+	public Path cacheDir() {
+		return cacheDir;
+	}
+
+	/** Best-effort wipe of the download cache (startup safety net + shutdown cleanup). */
+	public void cleanCache() {
+		if (!Files.exists(cacheDir)) {
+			return;
+		}
+		try (Stream<Path> paths = Files.walk(cacheDir)) {
+			paths.sorted(Comparator.reverseOrder()).forEach(p -> {
+				try {
+					Files.deleteIfExists(p);
+				} catch (IOException ignored) {
+					// a locked/in-use file; the next startup wipe will get it
+				}
+			});
+		} catch (IOException ignored) {
+			// cache dir vanished or unreadable — nothing to clean
+		}
 	}
 
 	/** Share {@code file} with the default piece size. */
@@ -140,6 +176,10 @@ public final class TransferService implements Closeable {
 			return null;
 		}
 		Announce a = decodeAnnounce(announce);
+		Path parent = out.getParent();
+		if (parent != null) {
+			Files.createDirectories(parent); // create the cache dir only once a download truly starts
+		}
 		DownloadSession dl = new DownloadSession(
 				a.meta, out, selfId, new SlidingWindowPicker(a.meta.pieceCount(), STREAM_WINDOW), MAX_IN_FLIGHT);
 		dl.addPeer(new Socket(a.host, a.port));
@@ -267,5 +307,6 @@ public final class TransferService implements Closeable {
 				// best effort
 			}
 		}
+		cleanCache(); // downloads are ephemeral — drop them on shutdown
 	}
 }
