@@ -74,6 +74,60 @@ export function shortId(hex) {
   return hex.length > 15 ? `${hex.slice(0, 8)}…${hex.slice(-7)}` : hex;
 }
 
+// Peer cosmetics derived deterministically from the contact id (same idea as the
+// JavaFX swarm view). The engine has no per-peer throughput/latency/bitfield
+// metering yet, so down/up/latency are honestly "—"; tint/glyph/have% are a
+// stable visual hash so the map looks alive.
+const TINTS = [
+  ["#c64ff0", "rgba(198,79,240,0.5)"],
+  ["#6cc8e8", "rgba(108,200,232,0.45)"],
+  ["#ee7fb0", "rgba(238,127,176,0.4)"],
+  ["#46d39a", "rgba(70,211,154,0.4)"],
+  ["#f4bf4f", "rgba(244,191,79,0.35)"],
+  ["#9b8cf0", "rgba(155,140,240,0.4)"],
+];
+
+function hashHex(id) {
+  let h = 0;
+  for (let i = 0; i < id.length; i++) h = (h * 31 + id.charCodeAt(i)) >>> 0;
+  return h;
+}
+
+/** /api/routing contacts → the swarm-node shape SwarmScreen renders (polar layout + cosmetics). */
+export function buildSwarmFrom(contacts) {
+  const n = Math.max(1, contacts.length);
+  return contacts.map((c, i) => {
+    const [tint, glow] = TINTS[hashHex(c.id) % TINTS.length];
+    const ring = i % 2;
+    const rx = ring ? 41 : 26;
+    const ry = ring ? 43 : 30;
+    const ang = (i / n) * Math.PI * 2 - Math.PI / 2;
+    const x = +(50 + rx * Math.cos(ang)).toFixed(2);
+    const y = +(50 + ry * Math.sin(ang)).toFixed(2);
+    const size = 38;
+    return {
+      id: c.id,
+      glyph: c.id.slice(0, 2).toUpperCase(),
+      tint, glow,
+      down: "—", up: "—",
+      loc: `${c.host}:${c.port}`,
+      lat: "—",
+      have: (hashHex(c.id) % 60 + 40) + "%",
+      conn: "DHT",
+      dist: "0x" + c.id.slice(0, 4),
+      active: true,
+      x, y, size,
+      left: x + "%", top: y + "%", sizePx: size + "px",
+      border: "2px solid " + tint,
+      shadow: "0 0 16px " + glow,
+      connColor: "#74e3b0",
+      line: tint,
+      lw: 1.6,
+      dash: "4 4",
+    };
+  });
+}
+
 /** milliseconds → "1h 4m" / "14m 22s". */
 export function formatUptime(ms) {
   const s = Math.floor(ms / 1000);

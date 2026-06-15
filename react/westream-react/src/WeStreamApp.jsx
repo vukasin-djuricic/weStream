@@ -3,7 +3,8 @@ import {
   buildPieces, peers, buildSwarm, shares, downloads,
   buildBuckets, storedKeys, rpcLog,
 } from "./data";
-import { useStatus, useRouting, bucketsFromSizes, formatId, shortId, formatUptime } from "./hooks";
+import { useStatus, useRouting, bucketsFromSizes, buildSwarmFrom, formatId, shortId, formatUptime } from "./hooks";
+import { share as apiShare, startDownload as apiDownload } from "./api";
 
 /* ------------------------------------------------------------------
    weStream — Phase 5 Player  (Direction A · Midnight Neon)
@@ -73,15 +74,17 @@ const NAV = [
 
 export default function WeStreamApp() {
   const [screen, setScreen] = useState("player");
+  const [currentInfohash, setCurrentInfohash] = useState(null); // set by Add-Stream, streamed by Player (Increment 8)
   const pieces = buildPieces();
-  const swarm = buildSwarm();
 
   // ---- live engine data (falls back to mock until the first fetch lands) ----
   const status = useStatus();
   const routing = useRouting();
   const connected = !!status.data;
   const buckets = routing.data ? bucketsFromSizes(routing.data.bucketSizes) : buildBuckets();
+  const swarm = routing.data ? buildSwarmFrom(routing.data.contacts) : buildSwarm();
   const peerCount = status.data ? status.data.peerCount : 24;
+  const youLabel = status.data ? shortId(status.data.nodeId) : "4287ad37";
 
   return (
     <div className="ws-scroll" style={css("height:100vh;display:flex;flex-direction:column;background:#0f0d15;color:#f4f1f8;font-family:'Manrope',system-ui,sans-serif;overflow:hidden")}>
@@ -170,9 +173,11 @@ export default function WeStreamApp() {
         {/* ===== MAIN ===== */}
         <main className="ws-scroll" style={css("flex:1;min-width:0;overflow:auto;background:radial-gradient(1100px 600px at 78% -8%, rgba(198,79,240,0.07), transparent 60%), #0f0d15")}>
           {screen === "player" && <PlayerScreen pieces={pieces} onSwarm={() => setScreen("swarm")} />}
-          {screen === "swarm" && <SwarmScreen swarm={swarm} />}
+          {screen === "swarm" && <SwarmScreen swarm={swarm} peerCount={peerCount} youLabel={youLabel} />}
           {screen === "home" && <LibraryScreen onPlayer={() => setScreen("player")} onAdd={() => setScreen("add")} />}
-          {screen === "add" && <AddStreamScreen onPlayer={() => setScreen("player")} />}
+          {screen === "add" && <AddStreamScreen
+            onStream={(ih) => { setCurrentInfohash(ih); setScreen("player"); }}
+            onDownloaded={(ih) => setCurrentInfohash(ih)} />}
           {screen === "dht" && <DhtScreen buckets={buckets} status={status.data} routing={routing.data} />}
         </main>
       </div>
@@ -295,9 +300,9 @@ function PlayerScreen({ pieces, onSwarm }) {
 }
 
 /* ===================== SWARM ===================== */
-function SwarmScreen({ swarm }) {
+function SwarmScreen({ swarm, peerCount = 24, youLabel = "4287ad37" }) {
   const stats = [
-    ["CONNECTED PEERS", "24", "#f4f1f8"], ["SWARM HEALTH", "Excellent", "#46d39a"],
+    ["CONNECTED PEERS", String(peerCount), "#f4f1f8"], ["SWARM HEALTH", peerCount > 0 ? "Excellent" : "Alone", "#46d39a"],
     ["DOWNLOAD", "11.4", "#6cc8e8"], ["UPLOAD", "3.2", "#ee7fb0"], ["SHARE RATIO", "1.84", "#f4f1f8"],
   ];
   return (
@@ -337,7 +342,7 @@ function SwarmScreen({ swarm }) {
               <span style={css("font:800 13px 'Manrope';color:#fff")}>YOU</span>
             </div>
           </div>
-          <span style={css("font:600 10px 'JetBrains Mono';color:#c7bfd6;background:#15111d;border:1px solid #2c2638;padding:3px 9px;border-radius:6px")}>seed · 4287ad37</span>
+          <span style={css("font:600 10px 'JetBrains Mono';color:#c7bfd6;background:#15111d;border:1px solid #2c2638;padding:3px 9px;border-radius:6px")}>you · {youLabel}</span>
         </div>
 
         {swarm.map((n) => (
@@ -362,7 +367,7 @@ function SwarmScreen({ swarm }) {
           <Hover key={n.id} base="display:grid;grid-template-columns:1.6fr 1.2fr 0.8fr 1.4fr 0.8fr 0.8fr 0.8fr 1fr;gap:12px;padding:12px 18px;border-bottom:1px solid #1c1826;align-items:center" hover="background:#191421">
             <div style={css("display:flex;align-items:center;gap:10px;min-width:0")}>
               <span style={css("width:26px;height:26px;flex-shrink:0;border-radius:7px;display:flex;align-items:center;justify-content:center;font:700 10px 'JetBrains Mono';border:" + n.border + ";color:" + n.tint)}>{n.glyph}</span>
-              <span style={css("font:600 12px 'JetBrains Mono';color:#e7e1ef")}>{n.id}</span>
+              <span style={css("font:600 12px 'JetBrains Mono';color:#e7e1ef")}>{n.id.length > 14 ? n.id.slice(0, 12) + "…" : n.id}</span>
             </div>
             <span style={css("font-size:12.5px;color:#b3aac0")}>{n.loc}</span>
             <span style={css("font:500 11.5px 'JetBrains Mono';color:#8b8299")}>{n.lat}</span>
@@ -450,21 +455,61 @@ function LibraryScreen({ onPlayer, onAdd }) {
 }
 
 /* ===================== ADD STREAM ===================== */
-function AddStreamScreen({ onPlayer }) {
+function AddStreamScreen({ onStream, onDownloaded }) {
+  const [infohash, setInfohash] = useState("");
+  const [sharePath, setSharePath] = useState("");
+  const [msg, setMsg] = useState(null); // { text, ok }
+  const [busy, setBusy] = useState(false);
+  const HEX40 = /^[0-9a-fA-F]{40}$/;
+  const inputStyle = css("flex:1;min-width:0;background:transparent;border:none;outline:none;font:500 13px 'JetBrains Mono';color:#e7e1ef");
+
+  const doDownload = async (thenStream) => {
+    const ih = infohash.trim().toLowerCase();
+    if (!HEX40.test(ih)) { setMsg({ text: "Infohash must be 40 hex characters.", ok: false }); return; }
+    setBusy(true);
+    try {
+      const r = await apiDownload(ih);
+      setMsg({ text: `Download started → ${r.out}`, ok: true });
+      onDownloaded && onDownloaded(ih);
+      if (thenStream) onStream && onStream(ih);
+    } catch (e) {
+      setMsg({ text: "Infohash not announced in the DHT (or engine offline).", ok: false });
+    } finally { setBusy(false); }
+  };
+
+  const doShare = async () => {
+    const p = sharePath.trim();
+    if (!p) { setMsg({ text: "Enter a file path to share.", ok: false }); return; }
+    setBusy(true);
+    try {
+      const r = await apiShare(p);
+      setInfohash(r.infohash);
+      setMsg({ text: `Shared · ${r.infohash} (${r.pieceCount} pieces)`, ok: true });
+    } catch (e) {
+      setMsg({ text: "Share failed — is the path a readable file and the engine online?", ok: false });
+    } finally { setBusy(false); }
+  };
+
   return (
     <section style={css("padding:30px 24px 40px;display:flex;justify-content:center")}>
       <div style={css("width:100%;max-width:720px")}>
         <h1 style={css("margin:0 0 6px;font-size:24px;font-weight:800;letter-spacing:-0.02em;text-align:center")}>Add a stream</h1>
         <div style={css("font-size:13px;color:#8b8299;text-align:center;margin-bottom:26px")}>Resolve an infohash through the DHT, or share a file of your own</div>
 
+        {msg && (
+          <div style={css("margin-bottom:16px;padding:11px 15px;border-radius:11px;font:500 12px 'JetBrains Mono';word-break:break-all;" + (msg.ok
+            ? "background:rgba(70,211,154,0.1);border:1px solid rgba(70,211,154,0.3);color:#74e3b0"
+            : "background:rgba(240,121,94,0.1);border:1px solid rgba(240,121,94,0.3);color:#f0795e"))}>{msg.text}</div>
+        )}
+
         <div style={css("padding:20px;background:#15111d;border:1px solid #221d2c;border-radius:16px;margin-bottom:16px")}>
           <div style={css("font:700 11px 'JetBrains Mono';color:#756c85;letter-spacing:0.06em;margin-bottom:11px")}>PASTE AN INFOHASH</div>
           <div style={css("display:flex;gap:10px")}>
             <div style={css("flex:1;display:flex;align-items:center;gap:11px;padding:13px 15px;background:#100d17;border:1px solid #2c2638;border-radius:12px")}>
               <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#c64ff0" strokeWidth="2"><circle cx="12" cy="12" r="3" /><path d="M12 2v4M12 18v4M2 12h4M18 12h4" /></svg>
-              <span style={css("font:500 13px 'JetBrains Mono';color:#e7e1ef")}>4287ad37811db73f862115ba0960cc6c9d54569e</span>
+              <input value={infohash} onChange={(e) => setInfohash(e.target.value)} placeholder="paste a 40-hex infohash" style={inputStyle} />
             </div>
-            <Hover as="button" base="display:flex;align-items:center;gap:8px;padding:0 20px;background:linear-gradient(135deg,#c64ff0,#9b3ec9);border:none;border-radius:12px;color:#fff;font:700 13px 'Manrope';cursor:pointer;white-space:nowrap" hover="filter:brightness(1.1)">Resolve →</Hover>
+            <Hover as="button" onClick={() => doDownload(false)} base="display:flex;align-items:center;gap:8px;padding:0 20px;background:linear-gradient(135deg,#c64ff0,#9b3ec9);border:none;border-radius:12px;color:#fff;font:700 13px 'Manrope';cursor:pointer;white-space:nowrap" hover="filter:brightness(1.1)">Resolve →</Hover>
           </div>
           <div style={css("display:flex;align-items:center;gap:12px;margin-top:16px;padding:13px 15px;background:#100d17;border:1px solid #1c1826;border-radius:12px")}>
             <span style={css("width:24px;height:24px;border-radius:50%;background:linear-gradient(150deg,#c64ff0,#7c2fd0);display:flex;align-items:center;justify-content:center;font:800 8px 'Manrope';color:#fff")}>YOU</span>
@@ -498,10 +543,10 @@ function AddStreamScreen({ onPlayer }) {
             </div>
           </div>
           <div style={css("display:flex;gap:11px;margin-top:18px")}>
-            <Hover as="button" onClick={onPlayer} base="flex:1;display:flex;align-items:center;justify-content:center;gap:9px;padding:13px;background:linear-gradient(135deg,#c64ff0,#9b3ec9);border:none;border-radius:12px;color:#fff;font:700 13.5px 'Manrope';cursor:pointer" hover="filter:brightness(1.1)">
+            <Hover as="button" onClick={() => doDownload(true)} base="flex:1;display:flex;align-items:center;justify-content:center;gap:9px;padding:13px;background:linear-gradient(135deg,#c64ff0,#9b3ec9);border:none;border-radius:12px;color:#fff;font:700 13.5px 'Manrope';cursor:pointer" hover="filter:brightness(1.1)">
               <svg width="16" height="16" viewBox="0 0 24 24"><path d="M8 5.5l11 6.5-11 6.5z" fill="#fff" /></svg> Stream now
             </Hover>
-            <Hover as="button" base="display:flex;align-items:center;justify-content:center;gap:9px;padding:13px 22px;background:#1a1623;border:1px solid #2c2638;border-radius:12px;color:#c7bfd6;font:700 13.5px 'Manrope';cursor:pointer" hover="background:#221d2c">
+            <Hover as="button" onClick={() => doDownload(false)} base="display:flex;align-items:center;justify-content:center;gap:9px;padding:13px 22px;background:#1a1623;border:1px solid #2c2638;border-radius:12px;color:#c7bfd6;font:700 13.5px 'Manrope';cursor:pointer" hover="background:#221d2c">
               <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 3v12M7 11l5 4 5-4M5 20h14" /></svg> Download
             </Hover>
           </div>
@@ -513,13 +558,19 @@ function AddStreamScreen({ onPlayer }) {
           <span style={css("flex:1;height:1px;background:#221d2c")} />
         </div>
 
-        <Hover base="padding:34px;border:1.5px dashed #3a3148;border-radius:16px;text-align:center;cursor:pointer;transition:all .15s" hover="border-color:#52406a;background:#191325">
+        <div style={css("padding:24px;border:1.5px dashed #3a3148;border-radius:16px;text-align:center")}>
           <div style={css("width:52px;height:52px;margin:0 auto 14px;border-radius:14px;background:rgba(198,79,240,0.1);border:1px solid rgba(198,79,240,0.3);display:flex;align-items:center;justify-content:center")}>
             <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#c64ff0" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 16V4M7 9l5-5 5 5M5 20h14" /></svg>
           </div>
-          <div style={css("font-size:15px;font-weight:700;margin-bottom:6px")}>Drag a file here to share</div>
-          <div style={css("font-size:12.5px;color:#8b8299;max-width:420px;margin:0 auto;line-height:1.55")}>weStream hashes it with SHA-1, splits it into 256 KB pieces, and announces you as the first seed in the DHT.</div>
-        </Hover>
+          <div style={css("font-size:15px;font-weight:700;margin-bottom:6px")}>Share a file from this machine</div>
+          <div style={css("font-size:12.5px;color:#8b8299;max-width:420px;margin:0 auto 16px;line-height:1.55")}>weStream hashes it with SHA-1, splits it into 256 KB pieces, and announces you as the first seed in the DHT.</div>
+          <div style={css("display:flex;gap:10px;max-width:520px;margin:0 auto")}>
+            <div style={css("flex:1;display:flex;align-items:center;padding:11px 14px;background:#100d17;border:1px solid #2c2638;border-radius:11px")}>
+              <input value={sharePath} onChange={(e) => setSharePath(e.target.value)} placeholder="/absolute/path/to/file" style={inputStyle} />
+            </div>
+            <Hover as="button" onClick={doShare} base="display:flex;align-items:center;gap:8px;padding:0 22px;background:linear-gradient(135deg,#c64ff0,#9b3ec9);border:none;border-radius:11px;color:#fff;font:700 13px 'Manrope';cursor:pointer;white-space:nowrap" hover="filter:brightness(1.1)">Share</Hover>
+          </div>
+        </div>
       </div>
     </section>
   );
