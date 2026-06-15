@@ -50,7 +50,7 @@ This started as a plain **IntelliJ IDEA** project (`weStream.iml`). As of Phase 
 Three entry points (all have `main`), now Kademlia:
 - `ui.WeStreamApp` (Gradle: `./gradlew run --args="<port> [seed]"`) — the **Phase-5 JavaFX window** for one node. `1100`/`seed` = the seed; any other port bootstraps to `127.0.0.1:1100`. GUI front-end over the same `NodeRuntime` as `ServentMain`.
 - `app.MultipleServentStarter` — the normal way to run. Spawns `SERVENT_COUNT` `app.ServentMain` processes (node 0 = seed, started first; no bootstrap-server JVM), redirecting each node's stdin/stdout/stderr to `kademlia/input/serventN_in.txt`, `kademlia/output/serventN_out.txt`, `kademlia/error/serventN_err.txt`. Type `stop` in its console to kill all processes. It spawns the child JVMs with classpath `out/production/weStream`, so **compile first** (IntelliJ build, or the `javac` line below).
-- `app.ServentMain <servent_list.properties> <serventId>` — run a single node manually (id 0 = seed; others bootstrap to `servent0.port`). CLI commands: `info`, `pause <ms>`, `routing_info`, `dht_put <key> <value>`, `dht_get <key>`, `stop`.
+- `app.ServentMain <servent_list.properties> <serventId>` — run a single node manually (id 0 = seed; others bootstrap to `servent0.port`). **Use the live Kademlia config `kademlia/servent_list.properties`** (the canonical one `MultipleServentStarter` runs), e.g. `java -cp out/production/weStream app.ServentMain kademlia/servent_list.properties 0` for the seed. (`chord/servent_list.properties` also boots — `readConfig` only reads `servent_count` + `serventN.port` — but it is the legacy Chord-era file and its node ports differ from the `kademlia/` one, so prefer `kademlia/`.) CLI commands: `info`, `pause <ms>`, `routing_info`, `dht_put <key> <value>`, `dht_get <key>`, `stop`.
 
 Compile manually from the repo root:
 ```
@@ -77,16 +77,18 @@ For the **app** (Kademlia) side there is no automated suite: "testing" means run
 
 **Other notes:** Don't trust native Java serialization (`ObjectInputStream.readObject`) on bytes from arbitrary peers — use an explicit length-prefixed binary format for the engine wire protocol (hand-rolled, zero-dep). JUnit is fine for tests (dev/test scope).
 
-## Configuration (`chord/servent_list.properties`)
+## Configuration
 
+**Live (Kademlia) config — `kademlia/servent_list.properties`** is what the runnable app uses (`MultipleServentStarter` and the manual `ServentMain` example above). The Kademlia `readConfig` is slim — it reads ONLY:
 ```
 servent_count=5      # number of nodes
-chord_size=64        # max Chord keys; MUST be a power of 2 (sets ring size & finger-table depth)
-bs.port=2000         # bootstrap server port
-servent0.port=1100   # each node's listener port; MUST be in range 1000-2000
-...
+servent0.port=1100   # each node's UDP listener port; MUST be in range 1000-2000 (node 0 = seed)
+servent1.port=1200
+...                   # node 4 = 1500 in the kademlia/ file
 ```
-A node's Chord ID is derived purely from its port: `chordHash(port) = 61 * port % CHORD_SIZE` (`ChordState.chordHash`). Two ports that hash to the same ID collide — see the commented collision-test line in the properties file.
+A node's 160-bit Kademlia id is derived inside the engine from `SHA-1(host:port)` (`NodeId.fromEndpoint`), not from the config. The HTTP API port for each node is `11470 + (udpPort - 1100)` (so node 0 → 11470, node 1 → 11570).
+
+**Legacy (Chord) config — `chord/servent_list.properties`** is the dormant Chord-era file (also carries `chord_size=64` / `bs.port=2000`, which the Kademlia path ignores; note its node 4 port is **1600**, not 1500). It still boots a Kademlia node but is NOT canonical — prefer the `kademlia/` file. For reference, a node's Chord ID was `chordHash(port) = 61 * port % CHORD_SIZE` (`ChordState.chordHash`); colliding ports share an ID (see the commented collision-test line).
 
 ## Architecture
 
