@@ -477,6 +477,12 @@ function LibraryScreen({ library, onPlayer, onAdd, onPlay }) {
   const empty = css("padding:24px;font:500 12.5px 'JetBrains Mono';color:#5f5670;background:#15111d;border:1px dashed #221d2c;border-radius:12px");
   // "Continue watching" = the most recent real download, if any (else the hero is hidden).
   const hero = myDownloads.find((d) => d.infohash) || null;
+  // Live search over the grids (hero stays — continue-watching isn't filtered).
+  const [query, setQuery] = useState("");
+  const q = query.trim().toLowerCase();
+  const match = (arr) => (q ? arr.filter((it) => (it.title || "").toLowerCase().includes(q)) : arr);
+  const shownShares = match(myShares);
+  const shownDownloads = match(myDownloads);
   return (
     <section style={css("padding:22px 24px 30px")}>
       <div style={css("display:flex;align-items:center;justify-content:space-between;gap:16px;margin-bottom:20px")}>
@@ -487,7 +493,8 @@ function LibraryScreen({ library, onPlayer, onAdd, onPlay }) {
         <div style={css("display:flex;gap:10px")}>
           <div style={css("display:flex;align-items:center;gap:9px;padding:9px 14px;background:#15111d;border:1px solid #221d2c;border-radius:11px;width:230px")}>
             <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#756c85" strokeWidth="2"><circle cx="11" cy="11" r="7" /><path d="m20 20-3.5-3.5" /></svg>
-            <span style={css("font-size:12.5px;color:#5f5670")}>Search library…</span>
+            <input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Search library…"
+              style={css("flex:1;min-width:0;border:none;outline:none;background:transparent;font:500 12.5px 'Manrope';color:#e7e1ef")} />
           </div>
           <Hover as="button" onClick={onAdd} base="display:flex;align-items:center;gap:8px;padding:9px 16px;background:linear-gradient(135deg,#c64ff0,#9b3ec9);border:none;border-radius:11px;color:#fff;font:700 12.5px 'Manrope';cursor:pointer" hover="filter:brightness(1.1)">
             <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round"><path d="M12 5v14M5 12h14" /></svg>Share a file
@@ -515,14 +522,14 @@ function LibraryScreen({ library, onPlayer, onAdd, onPlay }) {
       )}
 
       <div style={css("font-size:13px;font-weight:800;letter-spacing:-0.01em;margin-bottom:13px;display:flex;align-items:center;gap:9px")}>Your shares <span style={css("font:600 11px 'JetBrains Mono';color:#74e3b0;background:rgba(70,211,154,0.1);padding:2px 8px;border-radius:999px")}>seeding</span></div>
-      {myShares.length === 0
-        ? <div style={{ ...empty, marginBottom: 28 }}>Nothing shared yet — share a file from Add a stream.</div>
-        : <div style={{ ...grid, marginBottom: 28 }}>{myShares.map((it) => <MediaCard key={it.infohash || it.title} it={it} onPlay={onPlay} />)}</div>}
+      {shownShares.length === 0
+        ? <div style={{ ...empty, marginBottom: 28 }}>{q ? "No shares match your search." : "Nothing shared yet — share a file from Add a stream."}</div>
+        : <div style={{ ...grid, marginBottom: 28 }}>{shownShares.map((it) => <MediaCard key={it.infohash || it.title} it={it} onPlay={onPlay} />)}</div>}
 
       <div style={css("font-size:13px;font-weight:800;letter-spacing:-0.01em;margin-bottom:13px")}>Downloads</div>
-      {myDownloads.length === 0
-        ? <div style={empty}>No downloads yet — resolve an infohash from Add a stream.</div>
-        : <div style={grid}>{myDownloads.map((it) => <MediaCard key={it.infohash || it.title} it={it} onPlay={onPlay} />)}</div>}
+      {shownDownloads.length === 0
+        ? <div style={empty}>{q ? "No downloads match your search." : "No downloads yet — resolve an infohash from Add a stream."}</div>
+        : <div style={grid}>{shownDownloads.map((it) => <MediaCard key={it.infohash || it.title} it={it} onPlay={onPlay} />)}</div>}
     </section>
   );
 }
