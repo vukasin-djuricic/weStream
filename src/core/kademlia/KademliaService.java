@@ -9,6 +9,7 @@ import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.ThreadFactory;
@@ -35,6 +36,8 @@ public class KademliaService {
 	/** Lookup concurrency: how many nodes we query in parallel per round. */
 	public static final int ALPHA = 3;
 	public static final long RPC_TIMEOUT_MS = 2000;
+	/** Tries per single-target RPC (1 retry) to ride out transient UDP packet loss. */
+	public static final int RPC_ATTEMPTS = 2;
 	/** Cap on locally stored keys, to bound memory against STORE flooding. */
 	public static final int MAX_STORE_KEYS = 4096;
 
@@ -47,9 +50,15 @@ public class KademliaService {
 	private final AtomicLong txCounter = new AtomicLong();
 	private final ScheduledExecutorService scheduler =
 			Executors.newSingleThreadScheduledExecutor(daemon("kad-rpc-timeout"));
+	/** Off-thread eviction probes: PING a full bucket's LRS candidate without blocking the receive thread. */
+	private final ExecutorService evictionProbes =
+			Executors.newSingleThreadExecutor(daemon("kad-eviction"));
 
-	/** Local key/value store backing STORE / FIND_VALUE. */
-	private final Map<NodeId, byte[]> store = new ConcurrentHashMap<>();
+	/** Local key/value store backing STORE / FIND_VALUE (LRU-bounded; see {@link BoundedStore}). */
+	private final BoundedStore store = new BoundedStore(MAX_STORE_KEYS);
+
+	/** BEP 5-style swarm membership (peer sets, UNION + TTL), keyed by {@link #peerSetKey}. */
+	private final PeerStore peerStore = new PeerStore();
 
 	/** Recent RPC activity (inbound + outbound), for the Phase-5 DHT inspector. */
 	private final RpcLog rpcLog = new RpcLog(256);
@@ -80,7 +89,7 @@ public class KademliaService {
 
 	/** Snapshot of the keys currently stored locally (diagnostics/UI; drives the DHT inspector). */
 	public List<NodeId> storedKeys() {
-		return new ArrayList<>(store.keySet());
+		return store.keys();
 	}
 
 	/** Snapshot of recent RPC activity (oldest → newest), for the DHT inspector's live log. */
@@ -105,7 +114,18 @@ public class KademliaService {
 		// self-reported endpoint in the payload — a peer could spoof that to poison
 		// our table or make itself unreachable. (Assumes the transport's source
 		// address is the peer's reachable address; a NAT transport must guarantee this.)
-		routingTable.update(wireSource);
+		Contact evictionCandidate = routingTable.update(wireSource);
+		if (evictionCandidate != null) {
+			// Bucket is full: Kademlia probes the least-recently-seen contact and only
+			// replaces it if it's dead (favouring long-lived nodes). ping() blocks, so
+			// it must NOT run on this receive thread — hand it to the eviction executor.
+			evictionProbes.execute(() -> {
+				if (!ping(evictionCandidate)) {
+					routingTable.replaceInBucketFor(evictionCandidate.getId(), wireSource);
+				}
+				// alive → candidate keeps its slot (its PONG refreshes it), wireSource dropped
+			});
+		}
 
 		if (msg.type.isResponse()) {
 			CompletableFuture<Message> waiter = pending.remove(msg.txId);
@@ -123,15 +143,28 @@ public class KademliaService {
 			case FIND_NODE -> reply(replyTo,
 					Message.nodes(self, req.txId, routingTable.findClosest(req.target, RoutingTable.K)));
 			case STORE -> {
-				if (store.size() < MAX_STORE_KEYS || store.containsKey(req.target)) {
-					store.put(req.target, req.value);
+				if (PeerStore.isPeerAnnounce(req.value)) {
+					try {
+						// Anti-spoof: record the host we ACTUALLY heard from (wire source),
+						// not the self-reported one, so a peer can only announce itself.
+						PeerStore.PeerEntry e = PeerStore.decodeAnnounce(req.value);
+						peerStore.announce(req.target,
+								new PeerStore.PeerEntry(replyTo.getHost(), e.port()), now());
+					} catch (RuntimeException malformed) {
+						// drop a malformed announce; still ack below so the sender's await completes
+					}
+				} else {
+					store.put(req.target, req.value); // BoundedStore self-caps (LRU)
 				}
 				reply(replyTo, Message.stored(self, req.txId));
 			}
 			case FIND_VALUE -> {
 				byte[] held = store.get(req.target);
+				List<PeerStore.PeerEntry> swarm = peerStore.peers(req.target, now());
 				if (held != null) {
 					reply(replyTo, Message.value(self, req.txId, held));
+				} else if (!swarm.isEmpty()) {
+					reply(replyTo, Message.value(self, req.txId, PeerStore.tagSet(swarm)));
 				} else {
 					reply(replyTo,
 							Message.nodes(self, req.txId, routingTable.findClosest(req.target, RoutingTable.K)));
@@ -185,6 +218,26 @@ public class KademliaService {
 		return future.get(RPC_TIMEOUT_MS + 1000, TimeUnit.MILLISECONDS);
 	}
 
+	/**
+	 * Send a single RPC to {@code to} with up to {@link #RPC_ATTEMPTS} tries,
+	 * recovering from transient UDP packet loss. Each attempt uses a FRESH txId
+	 * (the {@code builder} takes it) — reusing one would let a prior attempt's
+	 * scheduled timeout cancel a later attempt's pending future. Used for
+	 * single-target RPCs (ping, replication); iterative lookups get their
+	 * redundancy from querying ALPHA nodes instead.
+	 */
+	private Message awaitRetrying(Contact to, java.util.function.LongFunction<Message> builder) throws Exception {
+		Exception last = null;
+		for (int attempt = 0; attempt < RPC_ATTEMPTS; attempt++) {
+			try {
+				return await(rpc(to, builder.apply(nextTx())));
+			} catch (Exception lossOrTimeout) {
+				last = lossOrTimeout; // retry with a fresh txId
+			}
+		}
+		throw last;
+	}
+
 	private long nextTx() {
 		return txCounter.incrementAndGet();
 	}
@@ -192,7 +245,7 @@ public class KademliaService {
 	/** Liveness probe used for k-bucket eviction. Returns true if the node replied. */
 	public boolean ping(Contact to) {
 		try {
-			await(rpc(to, Message.ping(self, nextTx())));
+			awaitRetrying(to, tx -> Message.ping(self, tx));
 			return true;
 		} catch (Exception dead) {
 			return false;
@@ -271,14 +324,10 @@ public class KademliaService {
 
 	/** Store a value at the k nodes closest to its key. Must run on an application thread. */
 	public void storeValue(NodeId key, byte[] value) {
-		// TODO(phase4-hardening): this local put bypasses the MAX_STORE_KEYS cap
-		// (that cap only guards the inbound STORE handler), so a heavy writer grows
-		// `store` unbounded. Route all writes through a bounded store (LRU + TTL) and
-		// add republish. See CLAUDE.md "Known engine gaps".
-		store.put(key, value); // keep a copy locally too
+		store.put(key, value); // local copy — LRU-bounded like the inbound path (no longer unbounded)
 		for (Contact c : nodeLookup(key)) {
 			try {
-				await(rpc(c, Message.store(self, nextTx(), key, value)));
+				awaitRetrying(c, tx -> Message.store(self, tx, key, value));
 			} catch (Exception ignored) {
 				// best-effort replication; a missed replica is not fatal
 			}
@@ -286,28 +335,141 @@ public class KademliaService {
 	}
 
 	/**
-	 * Retrieve a value by key: check locally, then ask the k closest nodes.
-	 * Returns the value bytes, or {@code null} if not found. Application thread.
+	 * Retrieve a value by key with a proper <em>iterative</em> FIND_VALUE: check
+	 * locally, then walk toward the key sending FIND_VALUE (not FIND_NODE) and
+	 * short-circuit on the first holder. A node without the value replies with its
+	 * closest contacts (NODES), which are merged into the shortlist so the search
+	 * hops closer each round — unlike delegating to {@link #nodeLookup} (FIND_NODE
+	 * only), this reaches a holder even when it is not among the originator's k
+	 * closest nodes. Returns the value bytes, or {@code null} if not found.
+	 * Application thread only.
 	 */
 	public byte[] findValue(NodeId key) {
 		byte[] local = store.get(key);
 		if (local != null) {
 			return local;
 		}
+
+		Comparator<Contact> byDistance = Comparator.comparing(c -> c.getId().distance(key));
+		Map<NodeId, Contact> known = new LinkedHashMap<>();
+		for (Contact c : routingTable.findClosest(key, RoutingTable.K)) {
+			known.put(c.getId(), c);
+		}
+		Set<NodeId> queried = new HashSet<>();
+
+		while (true) {
+			List<Contact> shortlist = new ArrayList<>(known.values());
+			shortlist.sort(byDistance);
+			if (shortlist.size() > RoutingTable.K) {
+				shortlist = shortlist.subList(0, RoutingTable.K);
+			}
+
+			List<Contact> batch = new ArrayList<>();
+			for (Contact c : shortlist) {
+				if (!queried.contains(c.getId())) {
+					batch.add(c);
+					if (batch.size() == ALPHA) {
+						break;
+					}
+				}
+			}
+			if (batch.isEmpty()) {
+				return null; // the k closest have all been queried, no holder found
+			}
+
+			List<CompletableFuture<Message>> inflight = new ArrayList<>();
+			for (Contact c : batch) {
+				queried.add(c.getId());
+				inflight.add(rpc(c, Message.findValue(self, nextTx(), key)));
+			}
+			for (CompletableFuture<Message> f : inflight) {
+				try {
+					Message resp = await(f);
+					if (resp.type == MessageType.VALUE) {
+						// TODO(phase4-hardening): optional cache-on-read here (store.put(key, resp.value))
+						// so reads survive the holder dying — but ONLY via a bounded store (LRU + TTL),
+						// else heavy readers grow memory unbounded. See CLAUDE.md "Known engine gaps".
+						return resp.value; // first holder wins
+					}
+					if (resp.contacts != null) {
+						for (Contact c : resp.contacts) {
+							if (!c.getId().equals(self.getId())) {
+								known.putIfAbsent(c.getId(), c);
+							}
+						}
+					}
+				} catch (Exception timedOutOrDead) {
+					// a dead node contributes nothing; keep it marked queried
+				}
+			}
+		}
+	}
+
+	// --------------------------------------------------------- swarm membership
+
+	/**
+	 * The DHT key under which a file's <em>peer set</em> lives — a derived id,
+	 * {@code SHA-1(infohash ‖ "peers")}, kept distinct from the {@code infohash}
+	 * key that holds the (content-identical) metadata. Splitting the two lets
+	 * metadata stay overwrite-safe while peers accumulate by union.
+	 */
+	public static NodeId peerSetKey(NodeId infohash) {
+		byte[] id = infohash.toBytes();
+		byte[] tag = "peers".getBytes(java.nio.charset.StandardCharsets.UTF_8);
+		byte[] both = new byte[id.length + tag.length];
+		System.arraycopy(id, 0, both, 0, id.length);
+		System.arraycopy(tag, 0, both, id.length, tag.length);
+		return NodeId.fromBytes(both);
+	}
+
+	/**
+	 * Join {@code infohash}'s swarm: announce {@code (host, port)} (this node's
+	 * transfer endpoint) at the k nodes closest to its peer-set key, and keep a
+	 * local copy. Idempotent and TTL-refreshing — call periodically to stay in the
+	 * swarm. Application thread only (drives a blocking lookup).
+	 */
+	public void announcePeer(NodeId infohash, String host, int port) {
+		NodeId key = peerSetKey(infohash);
+		byte[] value = PeerStore.tagAnnounce(host, port);
+		peerStore.announce(key, new PeerStore.PeerEntry(host, port), now());
+		for (Contact c : nodeLookup(key)) {
+			try {
+				awaitRetrying(c, tx -> Message.store(self, tx, key, value));
+			} catch (Exception ignored) {
+				// best-effort; a missed announce is refreshed on the next period
+			}
+		}
+	}
+
+	/**
+	 * All live peers seeding {@code infohash}, UNION-merged across the k closest
+	 * holders plus this node's local view. Unlike a single FIND_VALUE, merging
+	 * every holder's set means a peer that announced to a different subset still
+	 * shows up. Application thread only.
+	 */
+	public List<PeerStore.PeerEntry> getPeers(NodeId infohash) {
+		NodeId key = peerSetKey(infohash);
+		Set<PeerStore.PeerEntry> merged = new java.util.LinkedHashSet<>(peerStore.peers(key, now()));
 		for (Contact c : nodeLookup(key)) {
 			try {
 				Message resp = await(rpc(c, Message.findValue(self, nextTx(), key)));
-				if (resp.type == MessageType.VALUE) {
-					// TODO(phase4-hardening): optional cache-on-read here (store.put(key, resp.value))
-					// so reads survive the holder dying — but ONLY via a bounded store (LRU + TTL),
-					// else heavy readers grow memory unbounded. See CLAUDE.md "Known engine gaps".
-					return resp.value;
+				if (resp.type == MessageType.VALUE && PeerStore.isPeerSet(resp.value)) {
+					merged.addAll(PeerStore.decodeSet(resp.value));
 				}
 			} catch (Exception ignored) {
-				// try the next closest node
+				// skip a dead/garbage holder; the others still contribute
 			}
 		}
-		return null;
+		return new ArrayList<>(merged);
+	}
+
+	/** Number of swarm keys this node currently tracks (diagnostics/UI). */
+	public int swarmCount() {
+		return peerStore.swarmCount();
+	}
+
+	private static long now() {
+		return System.currentTimeMillis();
 	}
 
 	private static ThreadFactory daemon(String name) {

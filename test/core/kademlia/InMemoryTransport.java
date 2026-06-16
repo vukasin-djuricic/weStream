@@ -2,6 +2,7 @@ package core.kademlia;
 
 import java.util.Map;
 import java.util.concurrent.ExecutorService;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.BiConsumer;
 
 /**
@@ -21,6 +22,8 @@ public class InMemoryTransport implements Transport {
 	private final Map<Integer, InMemoryTransport> network;
 	private final ExecutorService delivery;
 	private volatile BiConsumer<Contact, byte[]> handler;
+	/** Simulates packet loss: silently drop the next N outbound sends (then deliver normally). */
+	private final AtomicInteger dropNextSends = new AtomicInteger(0);
 
 	public InMemoryTransport(String host, int port,
 			Map<Integer, InMemoryTransport> network, ExecutorService delivery) {
@@ -45,8 +48,16 @@ public class InMemoryTransport implements Transport {
 		network.remove(port);
 	}
 
+	/** Drop the next {@code n} outbound sends, to simulate transient UDP packet loss. */
+	public void dropNextSends(int n) {
+		dropNextSends.set(n);
+	}
+
 	@Override
 	public void send(Contact to, byte[] message) {
+		if (dropNextSends.getAndUpdate(n -> n > 0 ? n - 1 : 0) > 0) {
+			return; // simulated packet loss
+		}
 		InMemoryTransport target = network.get(to.getPort());
 		if (target == null) {
 			return; // unreachable / dropped

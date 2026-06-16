@@ -6,8 +6,10 @@ import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Comparator;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -33,8 +35,10 @@ public class KademliaCheck {
 		runGroup("unit (identity / routing / codec)", KademliaCheck::unitChecks);
 		runGroup("codec fuzz (hostile packets)", KademliaCheck::codecFuzzChecks);
 		runGroup("k-bucket eviction", KademliaCheck::evictionChecks);
+		runGroup("peer-set store (union + TTL)", KademliaCheck::peerStoreChecks);
 		runGroup("multi-hop lookup (in-memory)", KademliaCheck::multiHopChecks);
 		runGroup("RPC timeout (drop transport)", KademliaCheck::timeoutChecks);
+		runGroup("hardening (retry + bounded store)", KademliaCheck::hardeningChecks);
 		runGroup("end-to-end (real UDP)", KademliaCheck::rpcChecks);
 
 		System.out.println();
@@ -156,6 +160,62 @@ public class KademliaCheck {
 		check("remove shrinks bucket", bucket.size() == 1);
 	}
 
+	/** Peer-set semantics: UNION (not overwrite), TTL expiry, bounds, and value codec. */
+	private static void peerStoreChecks() {
+		PeerStore ps = new PeerStore();
+		NodeId key = NodeId.fromBytes("file-A".getBytes(StandardCharsets.UTF_8));
+		long t0 = 1_000_000L;
+
+		// Two distinct peers under one key must BOTH survive (union, not overwrite).
+		ps.announce(key, new PeerStore.PeerEntry("10.0.0.1", 1), t0);
+		ps.announce(key, new PeerStore.PeerEntry("10.0.0.2", 2), t0);
+		check("union keeps both peers", ps.peers(key, t0).size() == 2);
+
+		// Re-announcing an existing peer refreshes its TTL, no duplicate.
+		ps.announce(key, new PeerStore.PeerEntry("10.0.0.1", 1), t0 + 1000);
+		check("re-announce does not duplicate", ps.peers(key, t0 + 1000).size() == 2);
+
+		// Peer 2 (announced at t0) expires; peer 1 (refreshed) is still alive.
+		long afterPeer2Expiry = t0 + PeerStore.PEER_TTL_MS + 1;
+		List<PeerStore.PeerEntry> live = ps.peers(key, afterPeer2Expiry);
+		check("expired peer drops out", live.size() == 1 && live.get(0).port() == 1);
+
+		// Once all expire, the key disappears from the count.
+		check("empty swarm drops the key",
+				ps.peers(key, t0 + 2 * PeerStore.PEER_TTL_MS + 1).isEmpty() && ps.swarmCount() == 0);
+
+		// Per-key peer cap.
+		NodeId capped = NodeId.fromBytes("file-B".getBytes(StandardCharsets.UTF_8));
+		for (int i = 0; i < PeerStore.MAX_PEERS_PER_KEY + 10; i++) {
+			ps.announce(capped, new PeerStore.PeerEntry("10.1.0." + i, 1000 + i), t0);
+		}
+		check("per-key peer cap enforced", ps.peers(capped, t0).size() == PeerStore.MAX_PEERS_PER_KEY);
+
+		// Distinct-key cap.
+		PeerStore ps2 = new PeerStore();
+		for (int i = 0; i < PeerStore.MAX_PEER_KEYS + 5; i++) {
+			ps2.announce(NodeId.fromBytes(("k" + i).getBytes(StandardCharsets.UTF_8)),
+					new PeerStore.PeerEntry("10.2.0.1", 1), t0);
+		}
+		check("distinct-key cap enforced", ps2.swarmCount() == PeerStore.MAX_PEER_KEYS);
+
+		// Value codec round-trips, and a hostile set length is rejected (no OOM).
+		PeerStore.PeerEntry e = new PeerStore.PeerEntry("host", 6881);
+		check("announce value round-trips",
+				PeerStore.isPeerAnnounce(PeerStore.tagAnnounce("host", 6881))
+						&& PeerStore.decodeAnnounce(PeerStore.tagAnnounce("host", 6881)).equals(e));
+		List<PeerStore.PeerEntry> set = List.of(e, new PeerStore.PeerEntry("host2", 7000));
+		byte[] encoded = PeerStore.tagSet(set);
+		check("set value round-trips",
+				PeerStore.isPeerSet(encoded) && PeerStore.decodeSet(encoded).equals(set));
+		checkThrows("hostile peer-set length rejected", () -> {
+			byte[] bad = new byte[5];
+			bad[0] = encoded[0];               // valid TAG_SET
+			bad[1] = 0x7F; bad[2] = (byte) 0xFF; bad[3] = (byte) 0xFF; bad[4] = (byte) 0xFF; // n ~ 2^31
+			PeerStore.decodeSet(bad);
+		});
+	}
+
 	/**
 	 * Deterministic multi-hop lookup. Wires a hand-built chain — each node knows
 	 * only the node one step closer to the target — so a lookup from the farthest
@@ -203,6 +263,41 @@ public class KademliaCheck {
 		}
 	}
 
+	/** RPC retry rides out one dropped packet; the bounded store caps the originator path (H1). */
+	private static void hardeningChecks() {
+		Map<Integer, InMemoryTransport> network = new ConcurrentHashMap<>();
+		ExecutorService delivery = Executors.newCachedThreadPool(daemonFactory());
+		try {
+			InMemoryTransport t1 = new InMemoryTransport("mem", 1, network, delivery);
+			InMemoryTransport t2 = new InMemoryTransport("mem", 2, network, delivery);
+			KademliaService s1 = new KademliaService("mem", 1, t1);
+			KademliaService s2 = new KademliaService("mem", 2, t2);
+			s1.start();
+			s2.start();
+
+			// Bounded store: flood the ORIGINATOR path (s1 has no peers, so storeValue is a
+			// pure local put) with > MAX_STORE_KEYS distinct keys — it must stay capped (H1).
+			int flood = KademliaService.MAX_STORE_KEYS + 500;
+			for (int i = 0; i < flood; i++) {
+				s1.storeValue(NodeId.fromBytes(("k" + i).getBytes(StandardCharsets.UTF_8)),
+						new byte[] { (byte) i });
+			}
+			check("local store stays within the cap",
+					s1.storedKeyCount() <= KademliaService.MAX_STORE_KEYS);
+
+			// RPC retry: drop the first ping packet; the retry (fresh txId) still succeeds.
+			t1.dropNextSends(1);
+			long start = System.currentTimeMillis();
+			boolean alive = s1.ping(s2.self());
+			long elapsed = System.currentTimeMillis() - start;
+			check("ping survives one dropped packet (retry)", alive);
+			check("retry waited out one RPC timeout", elapsed >= KademliaService.RPC_TIMEOUT_MS);
+		} finally {
+			network.values().forEach(InMemoryTransport::close);
+			delivery.shutdownNow();
+		}
+	}
+
 	/** The RPC timeout path, isolated from OS networking via a silent (drop) transport. */
 	private static void timeoutChecks() {
 		Map<Integer, InMemoryTransport> network = new ConcurrentHashMap<>();
@@ -217,8 +312,11 @@ public class KademliaCheck {
 			long elapsed = System.currentTimeMillis() - start;
 
 			check("ping to silent node fails", !alive);
-			check("ping fails near the RPC timeout",
-					elapsed >= KademliaService.RPC_TIMEOUT_MS && elapsed < KademliaService.RPC_TIMEOUT_MS + 1500);
+			// ping retries RPC_ATTEMPTS times before giving up, so a dead node costs that
+			// many timeouts (each attempt waits one RPC_TIMEOUT before the next).
+			check("ping fails after the retried timeouts",
+					elapsed >= KademliaService.RPC_TIMEOUT_MS
+							&& elapsed < KademliaService.RPC_ATTEMPTS * KademliaService.RPC_TIMEOUT_MS + 1500);
 		} finally {
 			network.values().forEach(InMemoryTransport::close);
 			delivery.shutdownNow();
@@ -262,6 +360,19 @@ public class KademliaCheck {
 			check("storedKeys contains the stored key", nodes.get(1).storedKeys().contains(key));
 			check("missing key returns null",
 					nodes.get(4).findValue(NodeId.fromBytes("nope".getBytes(StandardCharsets.UTF_8))) == null);
+
+			// BEP 5 peer set over real UDP: two nodes announce the SAME infohash; a third
+			// getPeers must merge BOTH (the union the single-value store could never give).
+			NodeId infohash = NodeId.fromBytes("swarm-file".getBytes(StandardCharsets.UTF_8));
+			nodes.get(0).announcePeer(infohash, "127.0.0.1", 5001);
+			nodes.get(2).announcePeer(infohash, "127.0.0.1", 5002);
+			List<PeerStore.PeerEntry> swarm = nodes.get(4).getPeers(infohash);
+			check("getPeers returns both announced seeds", swarm.size() == 2);
+			Set<Integer> ports = new HashSet<>();
+			swarm.forEach(p -> ports.add(p.port()));
+			check("getPeers carries both endpoints", ports.contains(5001) && ports.contains(5002));
+			check("getPeers empty for unannounced infohash",
+					nodes.get(3).getPeers(NodeId.fromBytes("noswarm".getBytes(StandardCharsets.UTF_8))).isEmpty());
 		} finally {
 			transports.forEach(UdpTransport::close);
 		}
