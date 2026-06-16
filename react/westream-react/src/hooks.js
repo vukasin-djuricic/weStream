@@ -6,7 +6,7 @@
 // screen falls back to its mock.
 
 import { useEffect, useRef, useState } from "react";
-import { getStatus, getRouting, getProgress, getTransfers, getRpcLog } from "./api";
+import { getStatus, getRouting, getProgress, getTransfers, getRpcLog, getDhtKeys } from "./api";
 
 /**
  * Poll `fetchFn` every `intervalMs`. Returns { data, error }. Uses a setTimeout
@@ -55,6 +55,18 @@ export const useTransfers = () => usePoll(getTransfers, 1500);
 
 /** Poll the RPC activity log at 1s (drives the DHT inspector's live feed). */
 export const useRpcLog = () => usePoll(getRpcLog, 1000);
+
+/** Poll the local DHT store snapshot at 2s (drives the inspector's "Stored keys" panel). */
+export const useDhtKeys = () => usePoll(getDhtKeys, 2000);
+
+/** /api/dht/keys → the Stored-keys rows the DHT inspector renders (key id + honest placeholders). */
+export function storedKeysFrom(dht) {
+  return (dht.keys || []).map((k) => ({
+    key: shortId(k.key),
+    value: "stored value",     // values are raw bytes server-side; not surfaced
+    ttl: "—",                  // the bounded store has no TTL yet (no republish)
+  }));
+}
 
 const RPC_TYPE_COLOR = {
   FIND_NODE: "#c08fe8", FIND_VALUE: "#c08fe8", STORE: "#f4bf4f",

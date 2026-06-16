@@ -3,7 +3,7 @@ import {
   buildPieces, peers, buildSwarm, shares, downloads,
   buildBuckets, storedKeys, rpcLog,
 } from "./data";
-import { useStatus, useRouting, useProgress, useTransfers, useRpcLog, bucketsFromSizes, buildSwarmFrom, stripFromProgress, libraryFromTransfers, rpcLogFromEvents, formatId, shortId, formatUptime } from "./hooks";
+import { useStatus, useRouting, useProgress, useTransfers, useRpcLog, useDhtKeys, bucketsFromSizes, buildSwarmFrom, stripFromProgress, libraryFromTransfers, rpcLogFromEvents, storedKeysFrom, humanBytes, formatId, shortId, formatUptime } from "./hooks";
 import { share as apiShare, startDownload as apiDownload, streamUrl } from "./api";
 
 /* ------------------------------------------------------------------
@@ -64,7 +64,7 @@ const NAV = [
     icon: <><path d="M3 10.5 12 3l9 7.5" /><path d="M5 9.5V20h14V9.5" /><path d="M10 20v-6h4v6" /></> },
   { key: "player", label: "Now Playing", group: "browse",
     icon: <><circle cx="12" cy="12" r="9" /><path d="M10 8.5l5 3.5-5 3.5z" fill="currentColor" stroke="none" /></> },
-  { key: "swarm", label: "Swarm", group: "browse", badge: "24",
+  { key: "swarm", label: "Swarm", group: "browse",
     icon: <><circle cx="12" cy="5" r="2.4" /><circle cx="5" cy="18" r="2.4" /><circle cx="19" cy="18" r="2.4" /><path d="M10.6 6.8 6.4 16M13.4 6.8 17.6 16M7.4 18h9.2" /></> },
   { key: "add", label: "Add Stream", group: "browse",
     icon: <><circle cx="12" cy="12" r="9" /><path d="M12 8v8M8 12h8" /></> },
@@ -84,7 +84,11 @@ export default function WeStreamApp() {
   const library = transfers.data ? libraryFromTransfers(transfers.data.transfers) : null;
   const rpc = useRpcLog();
   const liveRpcLog = rpc.data ? rpcLogFromEvents(rpc.data.events) : null;
-  const connected = !!status.data;
+  const dhtKeys = useDhtKeys();
+  // Engine is reachable only while polls succeed; a fetch error after the first
+  // success means the JVM died / the port is gone — surface it instead of showing stale data.
+  const connected = !!status.data && !status.error;
+  const everConnected = !!status.data;
   const buckets = routing.data ? bucketsFromSizes(routing.data.bucketSizes) : buildBuckets();
   const swarm = routing.data ? buildSwarmFrom(routing.data.contacts) : buildSwarm();
   const peerCount = status.data ? status.data.peerCount : 24;
@@ -125,9 +129,10 @@ export default function WeStreamApp() {
           <div style={css("display:flex;align-items:center;gap:6px;padding:5px 11px;background:#1b1722;border:1px solid #2c2638;border-radius:999px;color:#ada3bd")}>
             <span style={{ color: "#c64ff0" }}>●</span> {peerCount} peers
           </div>
+          {/* The engine has no throughput meter yet, so rates are honestly "—" (not fabricated). */}
           <div style={css("display:flex;align-items:center;gap:5px;padding:5px 11px;background:#1b1722;border:1px solid #2c2638;border-radius:999px")}>
-            <span style={{ color: "#6cc8e8" }}>↓ 11.4</span><span style={{ color: "#756c85" }}>MB/s</span>
-            <span style={{ color: "#ee7fb0", marginLeft: 4 }}>↑ 3.2</span><span style={{ color: "#756c85" }}>MB/s</span>
+            <span style={{ color: "#6cc8e8" }}>↓ —</span><span style={{ color: "#756c85" }}>MB/s</span>
+            <span style={{ color: "#ee7fb0", marginLeft: 4 }}>↑ —</span><span style={{ color: "#756c85" }}>MB/s</span>
           </div>
         </div>
 
@@ -137,6 +142,16 @@ export default function WeStreamApp() {
           <span onClick={() => window.ws?.close()} style={{ cursor: "pointer" }}>⨯</span>
         </div>
       </header>
+
+      {/* engine-down banner: a poll failed, so the JVM is unreachable (don't silently show stale/mock data) */}
+      {status.error && (
+        <div style={css("flex-shrink:0;display:flex;align-items:center;gap:10px;padding:9px 16px;background:rgba(240,121,94,0.12);border-bottom:1px solid rgba(240,121,94,0.35);color:#f0795e;font:600 12px 'JetBrains Mono'")}>
+          <span style={css("width:8px;height:8px;border-radius:50%;background:#f0795e")} />
+          {everConnected
+            ? "Engine unreachable — the node process may have stopped. Showing the last known data."
+            : "Cannot reach the engine on this node's API port. Is the Java node running?"}
+        </div>
+      )}
 
       <div style={css("flex:1;display:flex;min-height:0")}>
         {/* ===== SIDEBAR ===== */}
@@ -157,7 +172,7 @@ export default function WeStreamApp() {
                     {active && <span style={css("position:absolute;inset:0;background:rgba(198,79,240,0.13);border-radius:11px;box-shadow:inset 3px 0 0 #c64ff0")} />}
                     <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ position: "relative" }}>{n.icon}</svg>
                     <span style={{ position: "relative" }}>{n.label}</span>
-                    {n.badge && <span style={css("position:relative;margin-left:auto;font:600 10.5px 'JetBrains Mono';color:#c64ff0;background:rgba(198,79,240,0.14);padding:2px 7px;border-radius:999px")}>{n.badge}</span>}
+                    {(n.key === "swarm" || n.badge) && <span style={css("position:relative;margin-left:auto;font:600 10.5px 'JetBrains Mono';color:#c64ff0;background:rgba(198,79,240,0.14);padding:2px 7px;border-radius:999px")}>{n.key === "swarm" ? peerCount : n.badge}</span>}
                   </Hover>
                 );
               })}
@@ -184,7 +199,7 @@ export default function WeStreamApp() {
           {screen === "add" && <AddStreamScreen
             onStream={(ih) => { setCurrentInfohash(ih); setScreen("player"); }}
             onDownloaded={(ih) => setCurrentInfohash(ih)} />}
-          {screen === "dht" && <DhtScreen buckets={buckets} status={status.data} routing={routing.data} rpcEvents={liveRpcLog} />}
+          {screen === "dht" && <DhtScreen buckets={buckets} status={status.data} routing={routing.data} rpcEvents={liveRpcLog} dht={dhtKeys.data} />}
         </main>
       </div>
     </div>
@@ -193,6 +208,7 @@ export default function WeStreamApp() {
 
 /* ===================== PLAYER ===================== */
 function PlayerScreen({ pieces, infohash, progress, swarm = [], peerCount = 0, onSwarm, onAdd }) {
+  const [vstat, setVstat] = useState(null); // null | "buffering" | "error" — from the <video> events
   const total = progress ? progress.total : 0;
   const have = progress ? progress.have : 0;
   const inFlight = progress ? progress.inFlight : 0;
@@ -222,8 +238,25 @@ function PlayerScreen({ pieces, infohash, progress, swarm = [], peerCount = 0, o
         {/* video surface — HTML5 <video> streams /stream/<infohash> (Range/206 from the engine; seeks move the playhead) */}
         <div style={css("position:relative;aspect-ratio:16/9;border-radius:16px;overflow:hidden;background:#000;border:1px solid #272131;display:flex;align-items:center;justify-content:center")}>
           {infohash ? (
-            <video key={infohash} src={streamUrl(infohash)} controls autoPlay
-              style={{ width: "100%", height: "100%", objectFit: "contain", background: "#000" }} />
+            <>
+              <video key={infohash} src={streamUrl(infohash)} controls autoPlay
+                onError={() => setVstat("error")}
+                onWaiting={() => setVstat("buffering")}
+                onStalled={() => setVstat("buffering")}
+                onPlaying={() => setVstat(null)}
+                onCanPlay={() => setVstat((s) => (s === "error" ? s : null))}
+                style={{ width: "100%", height: "100%", objectFit: "contain", background: "#000" }} />
+              {vstat && (
+                <div style={css("position:absolute;top:12px;left:12px;display:flex;align-items:center;gap:8px;padding:7px 12px;border-radius:9px;font:600 11px 'JetBrains Mono';" + (vstat === "error"
+                  ? "background:rgba(240,121,94,0.18);border:1px solid rgba(240,121,94,0.4);color:#f0795e"
+                  : "background:rgba(108,200,232,0.16);border:1px solid rgba(108,200,232,0.4);color:#6cc8e8"))}>
+                  <span style={css("width:7px;height:7px;border-radius:50%;background:currentColor;animation:wsPulse 1.4s infinite")} />
+                  {vstat === "error"
+                    ? "Playback error — the browser may not support this container/codec."
+                    : "Buffering — waiting for pieces near the playhead…"}
+                </div>
+              )}
+            </>
           ) : (
             <div style={css("position:relative;display:flex;flex-direction:column;align-items:center;gap:14px")}>
               <div style={css("position:absolute;inset:-40px;background:radial-gradient(420px 240px at 50% 42%, rgba(198,79,240,0.10), transparent 70%)")} />
@@ -277,7 +310,7 @@ function PlayerScreen({ pieces, infohash, progress, swarm = [], peerCount = 0, o
           <span style={css("font:600 11px 'JetBrains Mono';color:#c64ff0;background:rgba(198,79,240,0.13);padding:3px 9px;border-radius:999px")}>{peerCount} peers</span>
         </div>
         <div style={css("display:flex;gap:10px")}>
-          {[["DOWNLOAD", "11.4", "#6cc8e8"], ["UPLOAD", "3.2", "#ee7fb0"]].map(([l, v, c]) => (
+          {[["DOWNLOAD", "—", "#6cc8e8"], ["UPLOAD", "—", "#ee7fb0"]].map(([l, v, c]) => (
             <div key={l} style={css("flex:1;padding:12px;background:#15111d;border:1px solid #221d2c;border-radius:12px")}>
               <div style={css("font-family:'JetBrains Mono',monospace;font-size:10px;color:#756c85;margin-bottom:4px")}>{l}</div>
               <div style={css("font-size:18px;font-weight:800;color:" + c)}>{v}<span style={css("font-size:11px;color:#756c85;font-weight:600")}> MB/s</span></div>
@@ -315,16 +348,17 @@ function PlayerScreen({ pieces, infohash, progress, swarm = [], peerCount = 0, o
 
 /* ===================== SWARM ===================== */
 function SwarmScreen({ swarm, peerCount = 24, youLabel = "4287ad37" }) {
+  // down/up/share-ratio are honestly "—" — the engine has no per-transfer throughput meter yet.
   const stats = [
     ["CONNECTED PEERS", String(peerCount), "#f4f1f8"], ["SWARM HEALTH", peerCount > 0 ? "Excellent" : "Alone", "#46d39a"],
-    ["DOWNLOAD", "11.4", "#6cc8e8"], ["UPLOAD", "3.2", "#ee7fb0"], ["SHARE RATIO", "1.84", "#f4f1f8"],
+    ["DOWNLOAD", "—", "#6cc8e8"], ["UPLOAD", "—", "#ee7fb0"], ["SHARE RATIO", "—", "#f4f1f8"],
   ];
   return (
     <section style={css("padding:22px 24px 30px")}>
       <div style={css("display:flex;align-items:flex-end;justify-content:space-between;gap:16px;margin-bottom:18px")}>
         <div>
           <h1 style={css("margin:0 0 5px;font-size:22px;font-weight:800;letter-spacing:-0.02em")}>Swarm map</h1>
-          <div style={css("font-size:13px;color:#8b8299")}>Live peers sharing <span style={{ color: "#c7bfd6", fontWeight: 600 }}>Tears of Steel</span> · the more peers, the faster the stream</div>
+          <div style={css("font-size:13px;color:#8b8299")}>Live peers in your <span style={{ color: "#c7bfd6", fontWeight: 600 }}>Kademlia routing table</span> · the more peers, the faster lookups and transfers</div>
         </div>
         <div style={css("display:flex;align-items:center;gap:8px;padding:7px 13px;background:rgba(70,211,154,0.10);border:1px solid rgba(70,211,154,0.28);border-radius:999px")}>
           <span style={css("width:7px;height:7px;border-radius:50%;background:#46d39a;animation:wsPulse 2s infinite")} />
@@ -427,6 +461,8 @@ function LibraryScreen({ library, onPlayer, onAdd, onPlay }) {
   const myShares = library ? library.shares : shares;       // live or mock fallback
   const myDownloads = library ? library.downloads : downloads;
   const empty = css("padding:24px;font:500 12.5px 'JetBrains Mono';color:#5f5670;background:#15111d;border:1px dashed #221d2c;border-radius:12px");
+  // "Continue watching" = the most recent real download, if any (else the hero is hidden).
+  const hero = myDownloads.find((d) => d.infohash) || null;
   return (
     <section style={css("padding:22px 24px 30px")}>
       <div style={css("display:flex;align-items:center;justify-content:space-between;gap:16px;margin-bottom:20px")}>
@@ -445,7 +481,8 @@ function LibraryScreen({ library, onPlayer, onAdd, onPlay }) {
         </div>
       </div>
 
-      <Hover onClick={onPlayer} base="position:relative;display:flex;gap:22px;padding:20px;margin-bottom:26px;background:linear-gradient(110deg,#211433,#15111d 60%);border:1px solid #34284a;border-radius:18px;cursor:pointer;overflow:hidden" hover="border-color:#52406a">
+      {hero && (
+      <Hover onClick={() => onPlay && onPlay(hero.infohash)} base="position:relative;display:flex;gap:22px;padding:20px;margin-bottom:26px;background:linear-gradient(110deg,#211433,#15111d 60%);border:1px solid #34284a;border-radius:18px;cursor:pointer;overflow:hidden" hover="border-color:#52406a">
         <div style={css("position:absolute;right:-40px;top:-60px;width:280px;height:280px;border-radius:50%;background:radial-gradient(circle, rgba(198,79,240,0.18), transparent 70%)")} />
         <div style={css("position:relative;width:230px;flex-shrink:0;aspect-ratio:16/10;border-radius:12px;background:repeating-linear-gradient(135deg,#1a1426,#1a1426 10px,#1d1729 10px,#1d1729 20px);border:1px solid #34284a;display:flex;align-items:center;justify-content:center")}>
           <div style={css("width:48px;height:48px;border-radius:50%;background:rgba(198,79,240,0.85);display:flex;align-items:center;justify-content:center;box-shadow:0 6px 20px rgba(198,79,240,0.45)")}>
@@ -454,13 +491,14 @@ function LibraryScreen({ library, onPlayer, onAdd, onPlay }) {
         </div>
         <div style={css("position:relative;flex:1;display:flex;flex-direction:column;justify-content:center;min-width:0")}>
           <span style={css("font:700 10.5px 'JetBrains Mono';color:#c08fe8;letter-spacing:0.08em")}>CONTINUE WATCHING</span>
-          <h2 style={css("margin:7px 0 6px;font-size:24px;font-weight:800;letter-spacing:-0.02em")}>Tears of Steel</h2>
-          <div style={css("font:500 12px 'JetBrains Mono';color:#8b8299;margin-bottom:14px")}>2160p · HEVC · 42:13 watched of 1:32:55</div>
+          <h2 style={css("margin:7px 0 6px;font-size:24px;font-weight:800;letter-spacing:-0.02em;white-space:nowrap;overflow:hidden;text-overflow:ellipsis")}>{hero.title}</h2>
+          <div style={css("font:500 12px 'JetBrains Mono';color:#8b8299;margin-bottom:14px")}>{hero.res} · {hero.size} · {hero.status}</div>
           <div style={css("height:6px;width:360px;max-width:100%;border-radius:999px;background:#2a2038")}>
-            <div style={css("height:100%;width:45%;border-radius:999px;background:linear-gradient(90deg,#9b3ec9,#c64ff0)")} />
+            <div style={css("height:100%;width:" + hero.prog + ";border-radius:999px;background:linear-gradient(90deg,#9b3ec9,#c64ff0)")} />
           </div>
         </div>
       </Hover>
+      )}
 
       <div style={css("font-size:13px;font-weight:800;letter-spacing:-0.01em;margin-bottom:13px;display:flex;align-items:center;gap:9px")}>Your shares <span style={css("font:600 11px 'JetBrains Mono';color:#74e3b0;background:rgba(70,211,154,0.1);padding:2px 8px;border-radius:999px")}>seeding</span></div>
       {myShares.length === 0
@@ -481,6 +519,7 @@ function AddStreamScreen({ onStream, onDownloaded }) {
   const [sharePath, setSharePath] = useState("");
   const [msg, setMsg] = useState(null); // { text, ok }
   const [busy, setBusy] = useState(false);
+  const [resolved, setResolved] = useState(null); // real metadata from a resolve/share, or null
   const HEX40 = /^[0-9a-fA-F]{40}$/;
   const inputStyle = css("flex:1;min-width:0;background:transparent;border:none;outline:none;font:500 13px 'JetBrains Mono';color:#e7e1ef");
 
@@ -490,10 +529,12 @@ function AddStreamScreen({ onStream, onDownloaded }) {
     setBusy(true);
     try {
       const r = await apiDownload(ih);
+      setResolved({ infohash: ih, pieceSize: r.pieceSize, pieceCount: r.pieceCount, totalLength: r.totalLength });
       setMsg({ text: `Download started → ${r.out}`, ok: true });
       onDownloaded && onDownloaded(ih);
       if (thenStream) onStream && onStream(ih);
     } catch (e) {
+      setResolved(null);
       setMsg({ text: "Infohash not announced in the DHT (or engine offline).", ok: false });
     } finally { setBusy(false); }
   };
@@ -505,6 +546,7 @@ function AddStreamScreen({ onStream, onDownloaded }) {
     try {
       const r = await apiShare(p);
       setInfohash(r.infohash);
+      setResolved({ infohash: r.infohash, pieceSize: r.pieceSize, pieceCount: r.pieceCount, totalLength: r.totalLength });
       setMsg({ text: `Shared · ${r.infohash} (${r.pieceCount} pieces)`, ok: true });
     } catch (e) {
       setMsg({ text: "Share failed — is the path a readable file and the engine online?", ok: false });
@@ -541,10 +583,11 @@ function AddStreamScreen({ onStream, onDownloaded }) {
               <span style={css("flex:1;height:1px;background:repeating-linear-gradient(90deg,#3a3148,#3a3148 4px,transparent 4px,transparent 8px)")} />
               <span style={css("font:600 9.5px 'JetBrains Mono';color:#74e3b0")}>VALUE</span>
             </div>
-            <span style={css("font:600 11px 'JetBrains Mono';color:#74e3b0;white-space:nowrap")}>24 seeds</span>
+            <span style={css("font:600 11px 'JetBrains Mono';color:#74e3b0;white-space:nowrap")}>peer set</span>
           </div>
         </div>
 
+        {resolved && (
         <div style={css("padding:20px;background:linear-gradient(120deg,#1d1430,#15111d 70%);border:1px solid #34284a;border-radius:16px;margin-bottom:24px")}>
           <div style={css("display:flex;gap:17px")}>
             <div style={css("width:128px;flex-shrink:0;aspect-ratio:16/10;border-radius:11px;background:repeating-linear-gradient(135deg,#241634,#241634 9px,#281a38 9px,#281a38 18px);border:1px solid #34284a;display:flex;align-items:center;justify-content:center")}>
@@ -553,11 +596,10 @@ function AddStreamScreen({ onStream, onDownloaded }) {
             <div style={css("flex:1;min-width:0")}>
               <div style={css("display:flex;align-items:center;gap:9px;margin-bottom:4px")}>
                 <span style={css("font:700 9.5px 'JetBrains Mono';color:#74e3b0;background:rgba(70,211,154,0.12);padding:2px 8px;border-radius:5px")}>RESOLVED</span>
-                <span style={css("font:500 11px 'JetBrains Mono';color:#756c85")}>announced 8s ago</span>
               </div>
-              <h2 style={css("margin:0 0 12px;font-size:19px;font-weight:800;letter-spacing:-0.02em")}>Tears of Steel</h2>
+              <h2 style={css("margin:0 0 12px;font-size:16px;font-weight:800;letter-spacing:-0.01em;font-family:'JetBrains Mono',monospace;word-break:break-all")}>{shortId(resolved.infohash)}</h2>
               <div style={css("display:grid;grid-template-columns:repeat(3,1fr);gap:10px 18px")}>
-                {[["PIECE SIZE", "256 KB"], ["PIECES", "6,812"], ["TOTAL", "1.74 GB"]].map(([l, v]) => (
+                {[["PIECE SIZE", humanBytes(resolved.pieceSize)], ["PIECES", String(resolved.pieceCount)], ["TOTAL", humanBytes(resolved.totalLength)]].map(([l, v]) => (
                   <div key={l}><div style={css("font:600 9px 'JetBrains Mono';color:#6b5f80")}>{l}</div><div style={css("font:600 12.5px 'JetBrains Mono';color:#d8d0e4;margin-top:2px")}>{v}</div></div>
                 ))}
               </div>
@@ -572,6 +614,7 @@ function AddStreamScreen({ onStream, onDownloaded }) {
             </Hover>
           </div>
         </div>
+        )}
 
         <div style={css("display:flex;align-items:center;gap:14px;margin-bottom:20px")}>
           <span style={css("flex:1;height:1px;background:#221d2c")} />
@@ -598,13 +641,15 @@ function AddStreamScreen({ onStream, onDownloaded }) {
 }
 
 /* ===================== DHT INSPECTOR ===================== */
-function DhtScreen({ buckets, status, routing, rpcEvents }) {
+function DhtScreen({ buckets, status, routing, rpcEvents, dht }) {
   const nodeId = status ? formatId(status.nodeId) : "4287ad37 811db73f 862115ba 0960cc6c 9d54569e";
   const endpoint = status
     ? `udp://${status.host}:${status.udpPort} · up ${formatUptime(status.uptimeMs)}`
     : "udp://127.0.0.1:1100 · seed node · up 14m 22s";
   const contactCount = routing ? routing.contacts.length : 38;
   const log = rpcEvents || rpcLog; // live events, or the mock until the first poll
+  const keys = dht ? storedKeysFrom(dht) : storedKeys; // live store snapshot, or the mock until first poll
+  const storedCount = dht ? dht.storedCount : storedKeys.length;
   return (
     <section style={css("padding:22px 24px 30px")}>
       <div style={css("margin-bottom:18px")}>
@@ -619,7 +664,7 @@ function DhtScreen({ buckets, status, routing, rpcEvents }) {
           <div style={css("font:500 11.5px 'JetBrains Mono';color:#8b8299;margin-top:6px")}>{endpoint}</div>
         </div>
         <div style={css("display:flex;gap:26px")}>
-          {[["BUCKETS", String(buckets.length), "#f4f1f8", "/160"], ["CONTACTS", String(contactCount), "#c08fe8"], ["STORED KEYS", String(storedKeys.length), "#74e3b0"]].map(([l, v, c, suf]) => (
+          {[["BUCKETS", String(buckets.length), "#f4f1f8", "/160"], ["CONTACTS", String(contactCount), "#c08fe8"], ["STORED KEYS", String(storedCount), "#74e3b0"]].map(([l, v, c, suf]) => (
             <div key={l}><div style={css("font:600 9.5px 'JetBrains Mono';color:#6b5f80")}>{l}</div><div style={css("font-size:22px;font-weight:800;margin-top:3px;color:" + c)}>{v}{suf && <span style={css("font-size:12px;color:#5f5670")}>{suf}</span>}</div></div>
           ))}
         </div>
@@ -647,7 +692,10 @@ function DhtScreen({ buckets, status, routing, rpcEvents }) {
 
           <div style={css("background:#15111d;border:1px solid #221d2c;border-radius:16px;overflow:hidden")}>
             <div style={css("padding:14px 18px;border-bottom:1px solid #221d2c;font-size:13px;font-weight:800")}>Stored keys <span style={css("font:500 11px 'JetBrains Mono';color:#756c85")}>infohash → seed metadata</span></div>
-            {storedKeys.map((k) => (
+            {keys.length === 0 && (
+              <div style={css("padding:16px 18px;font:500 11.5px 'JetBrains Mono';color:#5f5670")}>no keys stored on this node yet</div>
+            )}
+            {keys.map((k) => (
               <div key={k.key} style={css("display:flex;align-items:center;gap:13px;padding:12px 18px;border-bottom:1px solid #1c1826")}>
                 <span style={css("width:30px;height:30px;flex-shrink:0;border-radius:8px;background:rgba(198,79,240,0.1);border:1px solid rgba(198,79,240,0.28);display:flex;align-items:center;justify-content:center")}>
                   <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#c64ff0" strokeWidth="2"><path d="M7 14a4 4 0 1 1 4-4M11 10l9 9M17 16l2 2M14 13l2 2" strokeLinecap="round" strokeLinejoin="round" /></svg>
