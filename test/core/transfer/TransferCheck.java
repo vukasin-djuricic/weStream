@@ -38,6 +38,7 @@ public class TransferCheck {
 		runGroup("picker ordering (unit)", TransferCheck::pickerChecks);
 		runGroup("end-to-end transfer (real localhost TCP)", TransferCheck::endToEndChecks);
 		runGroup("DHT discovery + announce (real UDP + TCP)", TransferCheck::dhtDiscoveryChecks);
+		runGroup("multi-peer swarm (two seeds, real UDP + TCP)", TransferCheck::multiPeerChecks);
 
 		System.out.println();
 		System.out.println(passed + " passed, " + failures.size() + " failed");
@@ -116,6 +117,20 @@ public class TransferCheck {
 			}
 			check("bitfield complete when all set", round.isComplete());
 			checkThrows("bitfield rejects wrong-length packed", () -> new Bitfield(10, new byte[1]));
+
+			// C1 (hostile announce): TorrentMetadata is the single gate every decode path
+			// flows through, so it must reject the values that would otherwise blow up
+			// PieceStore.setLength / the long→int piece-length math.
+			List<byte[]> oneHash = List.of(new byte[20]);
+			checkThrows("rejects totalLength=Long.MAX_VALUE",
+					() -> new TorrentMetadata(1, Long.MAX_VALUE, oneHash));
+			checkThrows("rejects pieceSize > MAX_FRAME",
+					() -> new TorrentMetadata(TransferCodec.MAX_FRAME + 1, 10, oneHash));
+			checkThrows("rejects pieceCount inconsistent with totalLength/pieceSize",
+					() -> new TorrentMetadata(1024, 1, List.of(new byte[20], new byte[20]))); // expects 1, got 2
+			// A consistent record still constructs (sanity: validation isn't over-eager).
+			check("consistent metadata accepted",
+					new TorrentMetadata(1024, 1500, List.of(new byte[20], new byte[20])).pieceCount() == 2);
 		} finally {
 			Files.deleteIfExists(src);
 			Files.deleteIfExists(out);
@@ -308,6 +323,74 @@ public class TransferCheck {
 			}
 			if (miss != null) {
 				Files.deleteIfExists(miss);
+			}
+		}
+	}
+
+	/**
+	 * The headline multi-peer test: TWO independent seeds announce the SAME file,
+	 * and a leecher must discover and pull from BOTH (the union the old one-value
+	 * announce could never express).
+	 */
+	private static void multiPeerChecks() throws Exception {
+		int n = 4;
+		List<UdpTransport> transports = new ArrayList<>();
+		List<KademliaService> nodes = new ArrayList<>();
+		TransferService seed0 = null;
+		TransferService seed1 = null;
+		TransferService leecher = null;
+		Path src = null;
+		Path out = null;
+		try {
+			for (int i = 0; i < n; i++) {
+				UdpTransport t = new UdpTransport(0);
+				KademliaService s = new KademliaService("127.0.0.1", t.getLocalPort(), t);
+				s.start();
+				transports.add(t);
+				nodes.add(s);
+			}
+			for (int i = 1; i < n; i++) {
+				nodes.get(i).bootstrap(nodes.get(0).self());
+			}
+
+			byte[] content = deterministicBytes(512 * 6 + 77, 4); // 7 pieces at 512
+			src = writeTempFile(content);
+			out = Files.createTempFile("westream-swarm-dl", ".bin");
+
+			// Two independent seeds share the SAME file -> same infohash, two peers.
+			seed0 = new TransferService(nodes.get(0), Files.createTempDirectory("ws-seed0"));
+			seed1 = new TransferService(nodes.get(1), Files.createTempDirectory("ws-seed1"));
+			leecher = new TransferService(nodes.get(3), Files.createTempDirectory("ws-leech"));
+
+			TorrentMetadata meta = seed0.share(src, 512);
+			TorrentMetadata meta1 = seed1.share(src, 512);
+			check("both seeds derive the same infohash", meta.infohash().equals(meta1.infohash()));
+
+			List<core.kademlia.PeerStore.PeerEntry> swarm = nodes.get(3).getPeers(meta.infohash());
+			check("getPeers sees both seeds", swarm.size() == 2);
+
+			DownloadSession dl = leecher.startDownload(meta.infohash(), out);
+			check("startDownload returns a session", dl != null);
+			// addPeer connects synchronously, so both peers attach before we return.
+			check("download connects to BOTH seeds", dl != null && dl.peerCount() == 2);
+			check("multi-peer download completes", dl != null && dl.awaitCompletion(10_000));
+			check("swarm-downloaded file byte-identical", Arrays.equals(Files.readAllBytes(out), content));
+		} finally {
+			if (seed0 != null) {
+				seed0.close();
+			}
+			if (seed1 != null) {
+				seed1.close();
+			}
+			if (leecher != null) {
+				leecher.close();
+			}
+			transports.forEach(UdpTransport::close);
+			if (src != null) {
+				Files.deleteIfExists(src);
+			}
+			if (out != null) {
+				Files.deleteIfExists(out);
 			}
 		}
 	}

@@ -6,19 +6,27 @@ import java.io.Closeable;
 import java.io.DataInputStream;
 import java.io.DataOutputStream;
 import java.io.IOException;
+import java.io.UncheckedIOException;
 import java.net.Socket;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Comparator;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.ThreadFactory;
+import java.util.concurrent.TimeUnit;
 import java.util.stream.Stream;
 
 import core.kademlia.KademliaService;
 import core.kademlia.NodeId;
+import core.kademlia.PeerStore;
 
 /**
  * Ties the transfer layer to the Kademlia DHT and the app. {@code share} splits a
@@ -36,16 +44,31 @@ public final class TransferService implements Closeable {
 
 	private static final int DOWNLOAD_TIMEOUT_MS = 30_000;
 	private static final int MAX_IN_FLIGHT = 16;
-	/** Sliding-window size for streaming downloads (the player's playhead drives the window). */
-	private static final int STREAM_WINDOW = 16;
-	/** Defensive cap when parsing a DHT announce (guards against a hostile value). */
+	/**
+	 * Sliding-window size for streaming downloads. Kept strictly larger than
+	 * {@link #MAX_IN_FLIGHT} so the high-priority window always has unrequested
+	 * slack ahead of the playhead — otherwise the in-flight ceiling fills with
+	 * fallback (far) pieces and neutralizes the window's near-playhead priority.
+	 */
+	private static final int STREAM_WINDOW = 32;
+	/** Defensive cap when parsing DHT metadata (guards against a hostile value). */
 	private static final int MAX_PIECES = 1 << 20;
+	/** Max simultaneous peer connections per download (bounds fan-out). */
+	private static final int MAX_PEERS = 8;
+	/** Refresh our swarm announce well before the TTL lapses. */
+	private static final long REANNOUNCE_PERIOD_MS = PeerStore.PEER_TTL_MS / 3;
 
 	private final KademliaService dht;
 	private final String host;
 	private final NodeId selfId;
 	/** Ephemeral per-node download cache (under the app folder); wiped on startup + shutdown. */
 	private final Path cacheDir;
+
+	/** Periodic swarm re-announce (TTL refresh); runs off the network/reader threads. */
+	private final ScheduledExecutorService reannounce =
+			Executors.newSingleThreadScheduledExecutor(daemon("ws-reannounce"));
+	/** TCP ports this node serves (seed + download servers) — used to skip self when swarming. */
+	private final Set<Integer> myPorts = ConcurrentHashMap.newKeySet();
 
 	private final List<TcpPeerServer> servers = new CopyOnWriteArrayList<>();
 	private final List<SeedSession> seeds = new CopyOnWriteArrayList<>();
@@ -122,10 +145,16 @@ public final class TransferService implements Closeable {
 		stores.add(store);
 		seeds.add(seed);
 		servers.add(server);
+		int port = server.getLocalPort();
+		myPorts.add(port);
 		Path name = file.getFileName();
 		sharedNames.put(meta.infohash(), name != null ? name.toString() : meta.infohash().toString());
 
-		dht.storeValue(meta.infohash(), encodeAnnounce(meta, host, server.getLocalPort()));
+		// BEP 5 split: metadata under the infohash key (content-identical across
+		// sharers, so latest-wins is safe), our endpoint into the file's peer set.
+		dht.storeValue(meta.infohash(), encodeMetadata(meta));
+		dht.announcePeer(meta.infohash(), host, port);            // synchronous initial join
+		scheduleReannounce(meta.infohash(), port, REANNOUNCE_PERIOD_MS); // then refresh
 		return meta;
 	}
 
@@ -135,16 +164,22 @@ public final class TransferService implements Closeable {
 	 * download does not complete before the timeout.
 	 */
 	public boolean download(NodeId infohash, Path out) throws Exception {
-		byte[] announce = dht.findValue(infohash);
-		if (announce == null) {
+		byte[] metaBytes = dht.findValue(infohash);
+		if (metaBytes == null) {
 			return false;
 		}
-		Announce a = decodeAnnounce(announce);
+		TorrentMetadata meta = decodeMetadata(metaBytes);
+		List<PeerStore.PeerEntry> swarm = dht.getPeers(infohash);
+		if (swarm.isEmpty()) {
+			return false; // metadata known but no live seed
+		}
 		// Download mode uses rarest-first; the sliding-window picker is the streaming path (Phase 5).
 		DownloadSession dl = new DownloadSession(
-				a.meta, out, selfId, new RarestFirstPicker(a.meta.pieceCount()), MAX_IN_FLIGHT);
+				meta, out, selfId, new RarestFirstPicker(meta.pieceCount()), MAX_IN_FLIGHT);
 		try {
-			dl.addPeer(new Socket(a.host, a.port));
+			if (connectToSwarm(dl, swarm) == 0) {
+				return false; // every announced peer was unreachable
+			}
 			return dl.awaitCompletion(DOWNLOAD_TIMEOUT_MS);
 		} finally {
 			dl.close();
@@ -171,22 +206,87 @@ public final class TransferService implements Closeable {
 		if (existing != null) {
 			return existing; // already downloading this file
 		}
-		byte[] announce = dht.findValue(infohash);
-		if (announce == null) {
+		byte[] metaBytes = dht.findValue(infohash);
+		if (metaBytes == null) {
 			return null;
 		}
-		Announce a = decodeAnnounce(announce);
+		TorrentMetadata meta = decodeMetadata(metaBytes);
+		List<PeerStore.PeerEntry> swarm = dht.getPeers(infohash);
+		if (swarm.isEmpty()) {
+			return null; // metadata known but no live seed
+		}
 		Path parent = out.getParent();
 		if (parent != null) {
 			Files.createDirectories(parent); // create the cache dir only once a download truly starts
 		}
 		DownloadSession dl = new DownloadSession(
-				a.meta, out, selfId, new SlidingWindowPicker(a.meta.pieceCount(), STREAM_WINDOW), MAX_IN_FLIGHT);
-		dl.addPeer(new Socket(a.host, a.port));
+				meta, out, selfId, new SlidingWindowPicker(meta.pieceCount(), STREAM_WINDOW), MAX_IN_FLIGHT);
+
+		// Become a findable partial seed: an inbound server serves whatever pieces
+		// this download already holds, and we join the swarm on the first verified
+		// piece (registered BEFORE connecting so the one-shot can't be missed).
+		SeedSession seed = new SeedSession(dl.store(), selfId);
+		TcpPeerServer server = new TcpPeerServer(0);
+		server.setConnectionHandler(seed::handle);
+		server.start();
+		int port = server.getLocalPort();
+		myPorts.add(port);
+		dl.onFirstPiece(() -> scheduleReannounce(infohash, port, 0)); // async join + refresh
+
+		if (connectToSwarm(dl, swarm) == 0) {
+			dl.close();
+			server.close();
+			seed.close();
+			myPorts.remove(port);
+			return null; // every announced peer was unreachable
+		}
+		servers.add(server);
+		seeds.add(seed);
 		active.put(infohash, dl);
 		Path name = out.getFileName();
 		downloadNames.put(infohash, name != null ? name.toString() : infohash.toString());
 		return dl;
+	}
+
+	/**
+	 * Open a connection to each distinct, non-self peer in {@code swarm} (capped at
+	 * {@link #MAX_PEERS}); a peer that refuses is skipped. Returns the number of
+	 * peers actually connected — the {@link DownloadSession} swarms across all of
+	 * them (one shared in-flight set, so no piece is requested twice).
+	 */
+	private int connectToSwarm(DownloadSession dl, List<PeerStore.PeerEntry> swarm) {
+		int connected = 0;
+		Set<String> seen = new HashSet<>();
+		for (PeerStore.PeerEntry p : swarm) {
+			if (connected >= MAX_PEERS) {
+				break;
+			}
+			if (isSelf(p) || !seen.add(p.host() + ":" + p.port())) {
+				continue; // don't connect to ourselves or the same endpoint twice
+			}
+			try {
+				dl.addPeer(new Socket(p.host(), p.port()));
+				connected++;
+			} catch (IOException dead) {
+				// peer gone; the rest of the swarm still covers the file
+			}
+		}
+		return connected;
+	}
+
+	private boolean isSelf(PeerStore.PeerEntry p) {
+		return p.host().equals(host) && myPorts.contains(p.port());
+	}
+
+	/** Schedule (and immediately-or-soon start) periodic announce of our endpoint for {@code infohash}. */
+	private void scheduleReannounce(NodeId infohash, int port, long initialDelayMs) {
+		reannounce.scheduleAtFixedRate(() -> {
+			try {
+				dht.announcePeer(infohash, host, port);
+			} catch (Exception ignored) {
+				// best-effort; the next period retries
+			}
+		}, initialDelayMs, REANNOUNCE_PERIOD_MS, TimeUnit.MILLISECONDS);
 	}
 
 	/** The live download for {@code infohash}, or {@code null} if none is active. */
@@ -234,13 +334,16 @@ public final class TransferService implements Closeable {
 		return out;
 	}
 
-	// ----------------------------------------------------------- announce codec
+	// ----------------------------------------------------------- metadata codec
 
-	private static byte[] encodeAnnounce(TorrentMetadata meta, String host, int port) {
+	/**
+	 * Encode the torrent metadata (the DHT value under the {@code infohash} key).
+	 * Carries NO endpoint — peers live in the separate peer-set key — so the bytes
+	 * are content-identical across every sharer, making latest-wins overwrite safe.
+	 */
+	private static byte[] encodeMetadata(TorrentMetadata meta) {
 		ByteArrayOutputStream bytes = new ByteArrayOutputStream();
 		try (DataOutputStream out = new DataOutputStream(bytes)) {
-			out.writeUTF(host);
-			out.writeInt(port);
 			out.writeInt(meta.pieceSize());
 			out.writeLong(meta.totalLength());
 			out.writeInt(meta.pieceCount());
@@ -248,20 +351,18 @@ public final class TransferService implements Closeable {
 				out.write(meta.pieceHash(i));
 			}
 		} catch (IOException e) {
-			throw new java.io.UncheckedIOException(e); // never happens on a byte array
+			throw new UncheckedIOException(e); // never happens on a byte array
 		}
 		return bytes.toByteArray();
 	}
 
-	private static Announce decodeAnnounce(byte[] data) throws IOException {
+	private static TorrentMetadata decodeMetadata(byte[] data) throws IOException {
 		try (DataInputStream in = new DataInputStream(new ByteArrayInputStream(data))) {
-			String host = in.readUTF();
-			int port = in.readInt();
 			int pieceSize = in.readInt();
 			long totalLength = in.readLong();
 			int pieceCount = in.readInt();
 			if (pieceCount < 0 || pieceCount > MAX_PIECES) {
-				throw new IOException("bad piece count in announce: " + pieceCount);
+				throw new IOException("bad piece count in metadata: " + pieceCount);
 			}
 			List<byte[]> hashes = new ArrayList<>(pieceCount);
 			for (int i = 0; i < pieceCount; i++) {
@@ -269,24 +370,23 @@ public final class TransferService implements Closeable {
 				in.readFully(h);
 				hashes.add(h);
 			}
-			return new Announce(new TorrentMetadata(pieceSize, totalLength, hashes), host, port);
+			// The TorrentMetadata constructor is the hostile-input gate (C1): it
+			// rejects an inconsistent pieceSize/totalLength/pieceCount.
+			return new TorrentMetadata(pieceSize, totalLength, hashes);
 		}
 	}
 
-	private static final class Announce {
-		final TorrentMetadata meta;
-		final String host;
-		final int port;
-
-		Announce(TorrentMetadata meta, String host, int port) {
-			this.meta = meta;
-			this.host = host;
-			this.port = port;
-		}
+	private static ThreadFactory daemon(String name) {
+		return r -> {
+			Thread t = new Thread(r, name);
+			t.setDaemon(true);
+			return t;
+		};
 	}
 
 	@Override
 	public void close() {
+		reannounce.shutdownNow();
 		for (DownloadSession dl : active.values()) {
 			try {
 				dl.close();

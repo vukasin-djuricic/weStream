@@ -10,6 +10,7 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 import core.kademlia.NodeId;
 
@@ -32,6 +33,10 @@ public final class DownloadSession implements PeerConnection.Listener, Closeable
 	private final Set<Integer> inFlight = ConcurrentHashMap.newKeySet();
 	private final List<PeerConnection> peers = new CopyOnWriteArrayList<>();
 	private final CountDownLatch done = new CountDownLatch(1);
+
+	/** Fired once, when the first piece is verified — lets the owner join the swarm as a partial seed. */
+	private final AtomicBoolean firstPieceFired = new AtomicBoolean(false);
+	private volatile Runnable firstPieceCallback;
 
 	public DownloadSession(TorrentMetadata meta, Path outPath, NodeId localId,
 			PiecePicker picker, int maxInFlight) throws IOException {
@@ -83,6 +88,16 @@ public final class DownloadSession implements PeerConnection.Listener, Closeable
 		if (picker instanceof SlidingWindowPicker sw) {
 			sw.setPlayhead(pieceIndex);
 		}
+	}
+
+	/**
+	 * Register a callback fired exactly once, the first time a piece is verified.
+	 * The owner uses this to announce itself as a (partial) seed so other leechers
+	 * can pull from it. Runs on a peer reader thread — keep it non-blocking (e.g.
+	 * schedule the actual announce elsewhere), or it stalls piece reception.
+	 */
+	public void onFirstPiece(Runnable callback) {
+		this.firstPieceCallback = callback;
 	}
 
 	/**
@@ -161,6 +176,12 @@ public final class DownloadSession implements PeerConnection.Listener, Closeable
 		boolean accepted = (index >= 0 && index < meta.pieceCount()) && store.writePiece(index, block);
 		inFlight.remove(index); // re-pickable if rejected
 		if (accepted) {
+			if (firstPieceFired.compareAndSet(false, true)) {
+				Runnable cb = firstPieceCallback;
+				if (cb != null) {
+					cb.run(); // must be non-blocking (see onFirstPiece)
+				}
+			}
 			for (PeerConnection p : peers) {
 				try {
 					p.sendHave(index);

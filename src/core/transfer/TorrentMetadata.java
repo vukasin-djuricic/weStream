@@ -29,17 +29,38 @@ public final class TorrentMetadata {
 	/** Default piece size: 256 KB. Tests use a smaller size to exercise multi-piece logic. */
 	public static final int DEFAULT_PIECE_SIZE = 256 * 1024;
 
+	/**
+	 * Absolute cap on a file's total length (16 GB). A hostile DHT announce could
+	 * otherwise carry {@code totalLength = Long.MAX_VALUE}, which {@link PieceStore}
+	 * passes to {@code RandomAccessFile.setLength} — a multi-exabyte (even sparse)
+	 * file is a disk-exhaustion DoS. Generous for any real media file, tiny vs. the
+	 * attack value.
+	 */
+	public static final long MAX_TOTAL_LENGTH = 16L * 1024 * 1024 * 1024;
+
 	private final int pieceSize;
 	private final long totalLength;
 	private final List<byte[]> pieceHashes;
 	private final NodeId infohash;
 
 	public TorrentMetadata(int pieceSize, long totalLength, List<byte[]> pieceHashes) {
-		if (pieceSize <= 0) {
-			throw new IllegalArgumentException("pieceSize must be positive: " + pieceSize);
+		// Bounds are a hostile-input gate: this constructor is the single point every
+		// path (PieceHasher and the DHT-announce decoder) flows through, so validating
+		// here closes the announce-poisoning hole (CLAUDE.md C1 / Security review).
+		if (pieceSize <= 0 || pieceSize > TransferCodec.MAX_FRAME) {
+			throw new IllegalArgumentException(
+					"pieceSize out of range (1.." + TransferCodec.MAX_FRAME + "): " + pieceSize);
 		}
-		if (totalLength < 0) {
-			throw new IllegalArgumentException("totalLength must be non-negative: " + totalLength);
+		if (totalLength < 0 || totalLength > MAX_TOTAL_LENGTH) {
+			throw new IllegalArgumentException(
+					"totalLength out of range (0.." + MAX_TOTAL_LENGTH + "): " + totalLength);
+		}
+		// pieceCount must agree with totalLength/pieceSize, or per-piece length math
+		// (the long→int narrowing in lengthOfPiece) would yield negative/garbage sizes.
+		long expectedPieces = (totalLength + pieceSize - 1) / pieceSize; // ceil
+		if (pieceHashes.size() != expectedPieces) {
+			throw new IllegalArgumentException("pieceCount " + pieceHashes.size()
+					+ " inconsistent with totalLength/pieceSize (expected " + expectedPieces + ")");
 		}
 		this.pieceSize = pieceSize;
 		this.totalLength = totalLength;
