@@ -209,6 +209,13 @@ export default function WeStreamApp() {
 /* ===================== PLAYER ===================== */
 function PlayerScreen({ pieces, infohash, progress, swarm = [], peerCount = 0, onSwarm, onAdd }) {
   const [vstat, setVstat] = useState(null); // null | "buffering" | "error" — from the <video> events
+  const [copied, setCopied] = useState(false);
+  const shareInfohash = () => {
+    if (!infohash) return;
+    navigator.clipboard?.writeText(infohash); // the infohash IS the shareable token (paste in Add Stream)
+    setCopied(true);
+    setTimeout(() => setCopied(false), 1500);
+  };
   const total = progress ? progress.total : 0;
   const have = progress ? progress.have : 0;
   const inFlight = progress ? progress.inFlight : 0;
@@ -228,11 +235,18 @@ function PlayerScreen({ pieces, infohash, progress, swarm = [], peerCount = 0, o
               <span>infohash {infohash ? shortId(infohash) : "—"}</span>
             </div>
           </div>
-          <div style={css("display:flex;gap:8px")}>
-            {["Cast", "Share"].map((t) => (
-              <Hover key={t} as="button" base="display:flex;align-items:center;gap:7px;padding:8px 13px;background:#1c1826;border:1px solid #2c2638;border-radius:10px;color:#c7bfd6;font:600 12.5px 'Manrope';cursor:pointer" hover="background:#252031">{t}</Hover>
-            ))}
-          </div>
+          {/* Share = copy the infohash (the P2P shareable token: paste it in Add Stream → Resolve). */}
+          {infohash && (
+            <div style={css("display:flex;gap:8px")}>
+              <Hover as="button" onClick={shareInfohash}
+                base={"display:flex;align-items:center;gap:7px;padding:8px 13px;border-radius:10px;font:600 12.5px 'Manrope';cursor:pointer;" + (copied
+                  ? "background:rgba(70,211,154,0.12);border:1px solid rgba(70,211,154,0.3);color:#74e3b0"
+                  : "background:#1c1826;border:1px solid #2c2638;color:#c7bfd6")}
+                hover={copied ? "" : "background:#252031"}>
+                {copied ? "✓ infohash copied" : "Share"}
+              </Hover>
+            </div>
+          )}
         </div>
 
         {/* video surface — HTML5 <video> streams /stream/<infohash> (Range/206 from the engine; seeks move the playhead) */}
