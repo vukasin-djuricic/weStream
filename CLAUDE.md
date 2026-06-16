@@ -2,6 +2,22 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+## Quick command reference
+
+Run from the repo root. The engine + app + HTTP API are plain JDK; the live UI is Electron + React.
+
+| Task | Bash / Git Bash | PowerShell (Windows) |
+|---|---|---|
+| Compile the engine | `javac -d out/production/weStream $(find src -name '*.java')` | `javac -d out/production/weStream (Get-ChildItem -Recurse src -Filter *.java).FullName` |
+| Compile + run all checks | `./check.sh` | `bash check.sh` (Git Bash ships with Git for Windows) |
+| Run one check suite (after `check.sh` compiled to `out/test`) | `java -cp out/test core.kademlia.KademliaCheck` (or `core.transfer.TransferCheck` / `app.api.ApiCheck`) | same |
+| Run the multi-node simulation | `java -cp out/production/weStream app.MultipleServentStarter` | same |
+| Run a single node (seed) | `java -cp out/production/weStream app.ServentMain kademlia/servent_list.properties 0` | same |
+| Run the live UI (node 0) | `cd react/westream-react && npm run app:dev` | same |
+| Run a second peer (node 1, API 11570) | `WS_NODE_ID=1 npm run app:dev` | `$env:WS_NODE_ID=1; npm run app:dev` |
+
+`check.sh` is the single validation entry point (compiles `src`+`test`, runs all three suites; exits non-zero on any failure). On Windows it runs under Git Bash via `bash check.sh` — it relies on `find`/`set -euo pipefail`, so it will not run as a native PowerShell command. See **Build & run** below for details.
+
 ## Project status & roadmap (READ FIRST)
 
 **Where we are (2026-06):** the project has migrated from a legacy **Chord** DHT (the original course framework) to a **Kademlia**-based P2P engine, the foundation of the aspirational "weStream" (BitTorrent download + Popcorn-Time streaming). **The runnable app now runs Kademlia** — launching `ServentMain` / `MultipleServentStarter` boots a `KademliaService` over UDP (Phase 3 done). The Chord classes still compile but are dormant (never started), kept as reference. A **BitTorrent-style transfer layer** (`core.transfer`) now rides on top: nodes `share`/`download` files, discovering seeds via the DHT (Phase 4 done). **Phase 5 (player UI) is functionally complete and PIVOTED to Electron + React** — a single Electron/React window per node (`react/westream-react/`) over a pure-JDK **local HTTP API** (`src/app/api/`), with all screens wired live including `<video>` watch-while-download streaming; the earlier JavaFX attempt (`ui/`) is now a dormant reference. First thing in a fresh session: run `./check.sh` (69 Kademlia + 56 transfer + **78 API** checks) to confirm green.
@@ -50,7 +66,7 @@ The repo is a **single root** (`src/`, `test/`, `chord/`, `kademlia/`). It conta
 
 The (dormant) Chord side simulated a distributed system by launching a bootstrap server and N "servent" nodes as **separate JVM processes on localhost**, each on its own port, over Java-serialized TCP messages. The live Kademlia app reuses the same multi-process-on-localhost harness shape (`MultipleServentStarter`) but over UDP with no bootstrap server (node 0 is the seed). The `core.transfer` layer adds a parallel TCP channel for bulk piece transfer on top. `Readme.tex` is the **aspirational** weStream spec (Kademlia + bitfield gossip + chunk streaming); the DHT and transfer layers now exist (Phases 1–4); the media **player** (Phase 5) is functionally complete as an **Electron + React** window (`react/westream-react/`) over a pure-JDK local HTTP API (`src/app/api/`), with real `<video>` watch-while-download streaming. The earlier **JavaFX** shell (`ui/`, Increment 1) is kept as a dormant reference (never started), same as Chord.
 
-The root `digest.txt` (~140KB) is a **generated gitingest dump of the whole repo** — gitignored, not source. Don't read it (use the real files), don't edit it, don't commit it.
+If a root `digest.txt` ever appears (a generated gitingest dump of the whole repo), it is **gitignored, not source** — don't read it (use the real files), don't edit it, don't commit it. (Not present in the tree by default.)
 
 **Design-handoff references (committed, NOT code):** `design_handoff_phase5_player/` (root) and `phase 5 - 2nd iteration/design_handoff_phase5_player/` are the Phase-5 UI design specs — `DESIGN_TOKENS.md`, `theme.css`, `*.dc.html` mockups, and `reference_screens/*.png` (the 2nd-iteration set adds the sliding-window/table variants). They are the source-of-truth visual spec the live `react/westream-react/` UI was built against, kept for reference; they are not the running app and not engine code. The matching `*.zip` raw exports (e.g. `Faza 5 UI Dizajn.zip`) are gitignored as redundant binaries.
 
@@ -68,9 +84,13 @@ Compile manually from the repo root:
 ```
 javac -d out/production/weStream $(find src -name '*.java')
 ```
+On **Windows / PowerShell** the `$(find ...)` glob does not work; use:
+```
+javac -d out/production/weStream (Get-ChildItem -Recurse src -Filter *.java).FullName
+```
 (The child-process classpath in `MultipleServentStarter` was previously hardcoded with Windows backslashes — `out\\production\\KiDS-vezbe9` — which broke on macOS/Linux. It now uses forward slashes and the `weStream` module name.)
 
-**Validation:** run `./check.sh` after every change — it compiles `src` + `test` and runs `core.kademlia.KademliaCheck`, a zero-dependency regression suite (identity/routing/codec unit checks + an end-to-end group over real UDP sockets). It exits non-zero on any failure, so the same command works in a git hook or CI. Test code lives in `test/` (kept out of `src/` so it never ships in the app) but in package `core.kademlia` to reach package-internal types. When you fix a bug, add a check that would have caught it.
+**Validation:** run `./check.sh` after every change (on **Windows** run it through Git Bash: `bash check.sh` — it is a `bash` script using `find` and `set -euo pipefail`, so it is not a native PowerShell command) — it compiles `src` + `test` and runs `core.kademlia.KademliaCheck`, a zero-dependency regression suite (identity/routing/codec unit checks + an end-to-end group over real UDP sockets). It exits non-zero on any failure, so the same command works in a git hook or CI. Test code lives in `test/` (kept out of `src/` so it never ships in the app) but in package `core.kademlia` to reach package-internal types. When you fix a bug, add a check that would have caught it.
 
 For the **app** (Kademlia) side there is no automated suite: "testing" means running the simulation (`java -cp out/production/weStream app.MultipleServentStarter`) and reading the per-node output files in `kademlia/output/`, with scripted scenarios fed through `kademlia/input/serventN_in.txt` (one CLI command per line). The committed scenario stores `hello=world` on node 0 and resolves `dht_get hello` on node 4. The dormant **Chord** side, if ever revived, used the parallel `chord/` dir the same way.
 
