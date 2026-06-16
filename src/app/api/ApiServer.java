@@ -90,6 +90,7 @@ public final class ApiServer implements Closeable {
 		this.server.createContext("/api/routing", this::handleRouting);
 		this.server.createContext("/api/dht/put", this::handleDhtPut);
 		this.server.createContext("/api/dht/get", this::handleDhtGet);
+		this.server.createContext("/api/dht/keys", this::handleDhtKeys);
 		this.server.createContext("/api/share", this::handleShare);
 		this.server.createContext("/api/download", this::handleDownload);
 		this.server.createContext("/api/progress", this::handleProgress);
@@ -207,6 +208,27 @@ public final class ApiServer implements Closeable {
 	}
 
 	/**
+	 * {@code GET /api/dht/keys} — the local DHT store snapshot for the inspector's
+	 * "Stored keys" panel: how many key/value pairs and swarm peer-sets this node
+	 * holds, plus the key ids. (Values aren't returned — they're raw bytes, and
+	 * peer-sets live in a separate store; the panel shows the keys + counts.)
+	 */
+	private void handleDhtKeys(HttpExchange ex) throws IOException {
+		if (!requireGet(ex)) {
+			return;
+		}
+		List<String> keys = new ArrayList<>();
+		for (NodeId k : kademlia.storedKeys()) {
+			keys.add(new Json().str("key", k.toString()).end());
+		}
+		sendJson(ex, 200, new Json()
+				.num("storedCount", kademlia.storedKeyCount())
+				.num("swarmCount", kademlia.swarmCount())
+				.raw("keys", Json.array(keys))
+				.end());
+	}
+
+	/**
 	 * {@code POST /api/share} with body {@code {"path":"..."}} — split + hash the
 	 * file, seed it, announce it in the DHT, and return its metadata + infohash.
 	 */
@@ -263,21 +285,37 @@ public final class ApiServer implements Closeable {
 			sendJson(ex, 400, "{\"error\":\"missing or malformed infohash\"}");
 			return;
 		}
-		String outStr = body.get("out");
 		// Default: the node's ephemeral cache (wiped on shutdown). Created lazily by startDownload.
-		Path out = (outStr != null && !outStr.isEmpty())
-				? Path.of(outStr)
-				: transfer.cacheDir().resolve(infohash + ".bin");
+		// A caller-supplied out is CONFINED to the cache dir — otherwise a loopback request
+		// could write attacker-chosen content to an arbitrary path (Security M1).
+		String outStr = body.get("out");
+		Path cacheDir = transfer.cacheDir().toAbsolutePath().normalize();
+		Path out;
+		if (outStr != null && !outStr.isEmpty()) {
+			Path candidate = Path.of(outStr).toAbsolutePath().normalize(); // collapses ".."
+			if (!candidate.startsWith(cacheDir)) {
+				sendJson(ex, 400, "{\"error\":\"out must be inside the download cache\"}");
+				return;
+			}
+			out = candidate;
+		} else {
+			out = cacheDir.resolve(infohash + ".bin");
+		}
 
 		DownloadSession dl = transfer.startDownload(infohash, out);
 		if (dl == null) {
 			sendJson(ex, 404, "{\"error\":\"infohash not announced in the DHT\"}");
 			return;
 		}
+		// Echo the resolved metadata so the UI's "resolved" card renders real values.
+		TorrentMetadata meta = dl.store().metadata();
 		sendJson(ex, 200, new Json()
 				.bool("started", true)
 				.str("infohash", infohash.toString())
 				.str("out", out.toString())
+				.num("pieceSize", meta.pieceSize())
+				.num("totalLength", meta.totalLength())
+				.num("pieceCount", meta.pieceCount())
 				.end());
 	}
 
@@ -509,6 +547,16 @@ public final class ApiServer implements Closeable {
 	}
 
 	private boolean requireMethod(HttpExchange ex, String method) throws IOException {
+		// CSRF guard: every handler enters here, so reject any cross-origin request from a
+		// non-local web origin BEFORE it can act (a remote page could otherwise drive
+		// /api/share, /api/download, /api/dht/put via a simple POST — Security H2/M1/L3).
+		// Requests with no Origin (native clients, the <video> tag, same-origin) and the
+		// renderer's own localhost / file:// origins are allowed, so the UI is unaffected.
+		if (!originAllowed(ex)) {
+			ex.getResponseHeaders().add("Access-Control-Allow-Origin", "*");
+			sendJson(ex, 403, "{\"error\":\"cross-origin request rejected\"}");
+			return false;
+		}
 		// Permissive CORS: this is a loopback-only companion API for the Electron/React
 		// renderer (a different origin: the Vite dev server, file://, or the <video> tag).
 		// Every handler enters through here, so this is the single CORS chokepoint.
@@ -525,6 +573,29 @@ public final class ApiServer implements Closeable {
 			return false;
 		}
 		return true;
+	}
+
+	/**
+	 * Whether the request's {@code Origin} is allowed to drive the API. Absent
+	 * Origin (native clients, the {@code <video>} tag, same-origin) and the
+	 * renderer's localhost / {@code file://} origins pass; any other web origin is
+	 * a cross-site caller and is rejected.
+	 */
+	private static boolean originAllowed(HttpExchange ex) {
+		String origin = ex.getRequestHeaders().getFirst("Origin");
+		if (origin == null || origin.isEmpty() || origin.equals("null")) {
+			return true; // no browser origin (curl / media element / same-origin) or file://
+		}
+		try {
+			java.net.URI u = java.net.URI.create(origin);
+			if ("file".equalsIgnoreCase(u.getScheme())) {
+				return true; // packaged Electron renderer
+			}
+			String host = u.getHost();
+			return "localhost".equals(host) || "127.0.0.1".equals(host) || "[::1]".equals(host);
+		} catch (RuntimeException malformed) {
+			return false;
+		}
 	}
 
 	/** Read up to {@code max} bytes of the request body as UTF-8; reject anything larger. */

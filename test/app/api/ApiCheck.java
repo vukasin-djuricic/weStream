@@ -184,6 +184,14 @@ public class ApiCheck {
 			check("absent key -> 200 found:false",
 					miss.code == 200 && miss.body.contains("\"found\":false"));
 
+			// /api/dht/keys reflects the local store (we put "hello" and "weird" above)
+			Response keys = http("GET", p, "/api/dht/keys");
+			check("dht/keys -> 200", keys.code == 200);
+			check("dht/keys reports storedCount >= 2", keys.body.contains("\"storedCount\":")
+					&& !keys.body.contains("\"storedCount\":0") && !keys.body.contains("\"storedCount\":1"));
+			check("dht/keys carries a keys array", keys.body.contains("\"keys\":["));
+			check("dht/keys reports swarmCount", keys.body.contains("\"swarmCount\":"));
+
 			// bad inputs
 			check("bad JSON body -> 400", http("POST", p, "/api/dht/put", "{not json").code == 400);
 			check("missing value -> 400",
@@ -225,8 +233,10 @@ public class ApiCheck {
 				nodes.get(i).bootstrap(nodes.get(0).self());
 			}
 
-			seederSvc = new TransferService(nodes.get(0));
-			leecherSvc = new TransferService(nodes.get(2));
+			// Inject temp cache dirs so downloads (now confined to the cache — Security M1)
+			// land in a hermetic temp folder instead of the repo's real cache/.
+			seederSvc = new TransferService(nodes.get(0), Files.createTempDirectory("ws-api-seed"));
+			leecherSvc = new TransferService(nodes.get(2), Files.createTempDirectory("ws-api-leech"));
 			seederApi = new ApiServer("127.0.0.1", 0, nodes.get(0), seederSvc,
 					nodes.get(0).self().getPort(), () -> 0L);
 			leecherApi = new ApiServer("127.0.0.1", 0, nodes.get(2), leecherSvc,
@@ -252,10 +262,26 @@ public class ApiCheck {
 			check("infohash parses via NodeId.fromHex",
 					NodeId.fromHex(infohash).toString().equals(infohash));
 
-			// --- download on node 2 (non-blocking)
+			// --- download on node 2 (non-blocking); out defaults to the (temp) cache dir
 			Response dl = http("POST", leechPort, "/api/download",
-					new Json().str("infohash", infohash).str("out", out.toString()).end());
+					new Json().str("infohash", infohash).end());
 			check("download -> 200 started", dl.code == 200 && dl.body.contains("\"started\":true"));
+			check("download echoes resolved metadata (for the UI card)",
+					dl.body.contains("\"pieceCount\":3") && dl.body.contains("\"pieceSize\":"));
+			out = Path.of(extract(dl.body, "out")); // the resolved cache path
+
+			// Security M1: an out that escapes the cache dir is rejected.
+			Response escape = http("POST", leechPort, "/api/download",
+					new Json().str("infohash", infohash).str("out", "../../evil.bin").end());
+			check("download out escaping the cache -> 400", escape.code == 400);
+
+			// Security H2/L3: a cross-origin (remote web page) request is rejected before acting;
+			// the renderer's own localhost origin is allowed.
+			Response evil = httpWithOrigin("POST", leechPort, "/api/share",
+					new Json().str("path", src.toString()).end(), "http://evil.example.com");
+			check("cross-origin POST rejected -> 403", evil.code == 403);
+			check("localhost origin allowed",
+					httpWithOrigin("GET", leechPort, "/api/status", null, "http://localhost:5173").code == 200);
 
 			// --- poll progress until complete (or time out)
 			boolean complete = false;
@@ -345,8 +371,10 @@ public class ApiCheck {
 			for (int i = 1; i < n; i++) {
 				nodes.get(i).bootstrap(nodes.get(0).self());
 			}
-			seederSvc = new TransferService(nodes.get(0));
-			leecherSvc = new TransferService(nodes.get(2));
+			// Inject temp cache dirs so downloads (now confined to the cache — Security M1)
+			// land in a hermetic temp folder instead of the repo's real cache/.
+			seederSvc = new TransferService(nodes.get(0), Files.createTempDirectory("ws-api-seed"));
+			leecherSvc = new TransferService(nodes.get(2), Files.createTempDirectory("ws-api-leech"));
 			seederApi = new ApiServer("127.0.0.1", 0, nodes.get(0), seederSvc,
 					nodes.get(0).self().getPort(), () -> 0L);
 			leecherApi = new ApiServer("127.0.0.1", 0, nodes.get(2), leecherSvc,
@@ -386,11 +414,11 @@ public class ApiCheck {
 			check("stream unknown infohash -> 404", httpStream(seedPort, "/stream/" + bogus, null).code == 404);
 
 			// --- watch-while-download: leecher streams the whole file WHILE downloading it
-			// explicit temp out so the suite never writes into the real per-node cache dir
-			watchedOut = Files.createTempFile("westream-watch", ".bin");
+			// out defaults to the (temp) cache dir, kept hermetic by the injected cacheDir
 			Response dl = http("POST", leechPort, "/api/download",
-					new Json().str("infohash", ih).str("out", watchedOut.toString()).end());
+					new Json().str("infohash", ih).end());
 			check("leecher download started", dl.code == 200);
+			watchedOut = Path.of(extract(dl.body, "out")); // resolved cache path, for cleanup
 			StreamResponse watched = httpStream(leechPort, "/stream/" + ih, null);
 			check("watch-while-download -> 200", watched.code == 200);
 			check("watch-while-download body byte-identical", Arrays.equals(watched.body, content));
@@ -534,6 +562,24 @@ public class ApiCheck {
 		String body = (is == null) ? "" : new String(is.readAllBytes(), StandardCharsets.UTF_8);
 		con.disconnect();
 		return new Response(code, body);
+	}
+
+	// Uses java.net.http.HttpClient because HttpURLConnection silently drops the
+	// "Origin" header (it's on its restricted-header list), so the server would never see it.
+	private static Response httpWithOrigin(String method, int port, String path, String body, String origin)
+			throws Exception {
+		java.net.http.HttpClient client = java.net.http.HttpClient.newHttpClient();
+		java.net.http.HttpRequest.BodyPublisher pub = (body == null)
+				? java.net.http.HttpRequest.BodyPublishers.noBody()
+				: java.net.http.HttpRequest.BodyPublishers.ofString(body);
+		java.net.http.HttpRequest req = java.net.http.HttpRequest.newBuilder()
+				.uri(URI.create("http://127.0.0.1:" + port + path))
+				.header("Origin", origin)
+				.method(method, pub)
+				.build();
+		java.net.http.HttpResponse<String> resp =
+				client.send(req, java.net.http.HttpResponse.BodyHandlers.ofString());
+		return new Response(resp.statusCode(), resp.body());
 	}
 
 	private record Response(int code, String body) {
