@@ -3,11 +3,26 @@
 // pure-JDK headless node (app.ServentMain) as a child process, health-checks its
 // local HTTP API, hands the API port to the renderer (via preload), and kills the
 // JVM on exit. One Electron window = one peer node (a 1:1 client simulation).
-const { app, BrowserWindow, ipcMain } = require("electron");
+const { app, BrowserWindow, ipcMain, dialog } = require("electron");
 const path = require("path");
 const fs = require("fs");
 const http = require("http");
 const { spawn } = require("child_process");
+
+// Native "open file" dialog for the Share screen — returns an absolute on-disk
+// path the engine can seed. Registered once (ipcMain.handle throws on a dup
+// channel), so it lives at module scope rather than inside createWindow. A
+// sandboxed <input type=file> would not expose the real path, hence the dialog.
+ipcMain.handle("dialog:pickFile", async () => {
+  const r = await dialog.showOpenDialog({
+    properties: ["openFile"],
+    filters: [
+      { name: "Video", extensions: ["mp4", "mkv", "webm", "avi", "mov", "m4v"] },
+      { name: "All files", extensions: ["*"] },
+    ],
+  });
+  return r.canceled || r.filePaths.length === 0 ? null : r.filePaths[0];
+});
 
 // The repo root holds the compiled engine + the Kademlia config (electron/ is 3 deep).
 const REPO_ROOT = path.resolve(__dirname, "..", "..", "..");

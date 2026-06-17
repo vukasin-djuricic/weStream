@@ -95,6 +95,9 @@ export default function WeStreamApp() {
   const youLabel = status.data ? shortId(status.data.nodeId) : "4287ad37";
   const prog = playerProgress.data;
   const pieces = (prog && prog.active && prog.pieceStates) ? stripFromProgress(prog) : buildPieces();
+  // Native-style window controls: macOS puts traffic lights on the left, Windows
+  // (and Linux) put min/max/close on the right. Default to the right elsewhere.
+  const isMac = (window.westream?.platform || "") === "darwin";
 
   return (
     <div className="ws-scroll" style={css("height:100vh;display:flex;flex-direction:column;background:#0f0d15;color:#f4f1f8;font-family:'Manrope',system-ui,sans-serif;overflow:hidden")}>
@@ -103,11 +106,13 @@ export default function WeStreamApp() {
       {/* ===== TITLE BAR ===== */}
       <header style={css("height:46px;flex-shrink:0;display:flex;align-items:center;justify-content:space-between;padding:0 14px;background:linear-gradient(180deg,#181320,#141019);border-bottom:1px solid #272131;-webkit-app-region:drag")}>
         <div style={css("display:flex;align-items:center;gap:14px")}>
-          <div style={css("display:flex;gap:8px;padding-right:6px;-webkit-app-region:no-drag")}>
-            <span onClick={() => window.ws?.close()} style={css("width:12px;height:12px;border-radius:50%;background:#ec6a5e;cursor:pointer")} />
-            <span onClick={() => window.ws?.minimize()} style={css("width:12px;height:12px;border-radius:50%;background:#f4bf4f;cursor:pointer")} />
-            <span onClick={() => window.ws?.maximize()} style={css("width:12px;height:12px;border-radius:50%;background:#61c554;cursor:pointer")} />
-          </div>
+          {isMac && (
+            <div style={css("display:flex;gap:8px;padding-right:6px;-webkit-app-region:no-drag")}>
+              <span onClick={() => window.ws?.close()} style={css("width:12px;height:12px;border-radius:50%;background:#ec6a5e;cursor:pointer")} />
+              <span onClick={() => window.ws?.minimize()} style={css("width:12px;height:12px;border-radius:50%;background:#f4bf4f;cursor:pointer")} />
+              <span onClick={() => window.ws?.maximize()} style={css("width:12px;height:12px;border-radius:50%;background:#61c554;cursor:pointer")} />
+            </div>
+          )}
           <div style={css("display:flex;align-items:center;gap:9px")}>
             <span style={css("position:relative;width:22px;height:22px;display:inline-flex;align-items:center;justify-content:center")}>
               <span style={css("position:absolute;width:9px;height:9px;border-radius:50%;background:#c64ff0;box-shadow:0 0 10px rgba(198,79,240,0.7)")} />
@@ -136,11 +141,13 @@ export default function WeStreamApp() {
           </div>
         </div>
 
-        <div style={css("display:flex;gap:16px;color:#756c85;font-size:16px;padding-right:4px;-webkit-app-region:no-drag")}>
-          <span onClick={() => window.ws?.maximize()} style={{ cursor: "pointer" }}>⤢</span>
-          <span onClick={() => window.ws?.minimize()} style={{ cursor: "pointer" }}>—</span>
-          <span onClick={() => window.ws?.close()} style={{ cursor: "pointer" }}>⨯</span>
-        </div>
+        {!isMac && (
+          <div style={css("display:flex;gap:16px;color:#756c85;font-size:16px;padding-right:4px;-webkit-app-region:no-drag")}>
+            <span onClick={() => window.ws?.minimize()} style={{ cursor: "pointer" }}>—</span>
+            <span onClick={() => window.ws?.maximize()} style={{ cursor: "pointer" }}>⤢</span>
+            <span onClick={() => window.ws?.close()} style={{ cursor: "pointer" }}>⨯</span>
+          </div>
+        )}
       </header>
 
       {/* engine-down banner: a poll failed, so the JVM is unreachable (don't silently show stale/mock data) */}
@@ -651,8 +658,17 @@ function AddStreamScreen({ onStream, onDownloaded }) {
           <div style={css("font-size:12.5px;color:#8b8299;max-width:420px;margin:0 auto 16px;line-height:1.55")}>weStream hashes it with SHA-1, splits it into 256 KB pieces, and announces you as the first seed in the DHT.</div>
           <div style={css("display:flex;gap:10px;max-width:520px;margin:0 auto")}>
             <div style={css("flex:1;display:flex;align-items:center;padding:11px 14px;background:#100d17;border:1px solid #2c2638;border-radius:11px")}>
-              <input value={sharePath} onChange={(e) => setSharePath(e.target.value)} placeholder="/absolute/path/to/file" style={inputStyle} />
+              <input value={sharePath} onChange={(e) => setSharePath(e.target.value)} placeholder="Click Browse… or paste an absolute path" style={inputStyle} />
             </div>
+            {window.ws?.pickFile && (
+              <Hover as="button"
+                onClick={async () => { const p = await window.ws.pickFile(); if (p) setSharePath(p); }}
+                base="display:flex;align-items:center;gap:7px;padding:0 16px;background:#1b1722;border:1px solid #2c2638;border-radius:11px;color:#cdc4dc;font:600 13px 'Manrope';cursor:pointer;white-space:nowrap"
+                hover="border-color:#3a3148;background:#211b2b">
+                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M3 7h6l2 2h10v9a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1z" /></svg>
+                Browse…
+              </Hover>
+            )}
             <Hover as="button" onClick={doShare} base="display:flex;align-items:center;gap:8px;padding:0 22px;background:linear-gradient(135deg,#c64ff0,#9b3ec9);border:none;border-radius:11px;color:#fff;font:700 13px 'Manrope';cursor:pointer;white-space:nowrap" hover="filter:brightness(1.1)">Share</Hover>
           </div>
         </div>
