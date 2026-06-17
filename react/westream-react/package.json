@@ -9,7 +9,8 @@
     "build": "vite build",
     "preview": "vite preview",
     "app": "vite build && electron electron/main.cjs",
-    "app:dev": "concurrently -k \"vite\" \"wait-on tcp:5173 && ELECTRON_START_URL=http://localhost:5173 electron electron/main.cjs\""
+    "app:dev": "concurrently -k \"vite\" \"wait-on tcp:5173 && ELECTRON_START_URL=http://localhost:5173 electron electron/main.cjs\"",
+    "app:start": "electron electron/main.cjs"
   },
   "dependencies": {
     "react": "^18.3.1",
