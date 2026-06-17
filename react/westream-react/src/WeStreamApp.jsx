@@ -48,6 +48,11 @@ const KEYFRAMES = `
 @keyframes wsOrbit { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
 .ws-scroll::-webkit-scrollbar { width: 10px; height: 10px; }
 .ws-scroll::-webkit-scrollbar-thumb { background: #322b40; border-radius: 8px; border: 2px solid transparent; background-clip: padding-box; }
+/* Reserve the scrollbar gutter always, so a vertical scrollbar appearing never
+   narrows the content. Without this the Player's aspect-ratio video drives a
+   feedback loop (scrollbar shrinks width -> video shorter -> no overflow ->
+   scrollbar gone -> width grows -> overflow -> ...), which flickers. */
+.ws-scroll { scrollbar-gutter: stable; }
 `;
 
 // small hover helper (since inline styles can't do :hover)
