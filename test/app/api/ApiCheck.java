@@ -272,6 +272,20 @@ public class ApiCheck {
 			int dupes = afterReshare.split("\"infohash\":\"" + infohash + "\"", -1).length - 1;
 			check("re-share does not duplicate the Library entry (count==1)", dupes == 1);
 
+			// --- /api/peers peek: resolve metadata + swarm size WITHOUT downloading
+			// (backs the Add-Stream "N peers in swarm" readout before the user commits).
+			Response peek = http("GET", leechPort, "/api/peers?infohash=" + infohash);
+			check("peek -> 200 found with real metadata",
+					peek.code == 200 && peek.body.contains("\"found\":true")
+							&& peek.body.contains("\"pieceCount\":3")
+							&& peek.body.contains("\"totalLength\":"));
+			check("peek reports a non-empty swarm (the seeder announced)",
+					!peek.body.contains("\"peers\":0"));
+			Response peekMiss = http("GET", leechPort,
+					"/api/peers?infohash=" + "0".repeat(40));
+			check("peek of an unannounced infohash -> found:false",
+					peekMiss.code == 200 && peekMiss.body.contains("\"found\":false"));
+
 			// --- download on node 2 (non-blocking); out defaults to the (temp) cache dir
 			Response dl = http("POST", leechPort, "/api/download",
 					new Json().str("infohash", infohash).end());
@@ -306,6 +320,13 @@ public class ApiCheck {
 			check("progress reports active with total 3", last.contains("\"total\":3"));
 			check("progress reaches complete", complete);
 			check("downloaded file byte-identical", Arrays.equals(Files.readAllBytes(out), content));
+			// Download-side swarm split: progress exposes the real seeders/leechers of
+			// the peers we pull FROM (derived from their bitfields). The seeder here is
+			// a complete seed, so the leecher's progress must report at least one seeder.
+			check("download progress exposes seeders/leechers split",
+					last.contains("\"seeders\":") && last.contains("\"leechers\":"));
+			check("download progress counts the complete seeder",
+					last.contains("\"seeders\":1"));
 
 			// --- /api/transfers (live Library list)
 			String seederTransfers = http("GET", seedPort, "/api/transfers").body;

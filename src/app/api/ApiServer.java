@@ -94,6 +94,7 @@ public final class ApiServer implements Closeable {
 		this.server.createContext("/api/dht/get", this::handleDhtGet);
 		this.server.createContext("/api/dht/keys", this::handleDhtKeys);
 		this.server.createContext("/api/share", this::handleShare);
+		this.server.createContext("/api/peers", this::handlePeers);
 		this.server.createContext("/api/download", this::handleDownload);
 		this.server.createContext("/api/progress", this::handleProgress);
 		this.server.createContext("/api/transfers", this::handleTransfers);
@@ -271,6 +272,40 @@ public final class ApiServer implements Closeable {
 	 * infohash is not announced in the DHT; otherwise {@code started:true} and the
 	 * resolved output path (poll {@code /api/progress} to watch it).
 	 */
+	/**
+	 * {@code GET /api/peers?infohash=<40-hex>} — a lightweight DHT peek that resolves
+	 * the file's metadata and counts its live swarm WITHOUT starting a download, so
+	 * the Add-Stream screen can show "N peers hold this file" before the user
+	 * commits. {@code found:false} when the infohash is not announced. The {@code peers}
+	 * count is the whole swarm; the DHT peer set carries no seeder-vs-leecher flag
+	 * (that split is only knowable once a transfer connects and reads bitfields).
+	 */
+	private void handlePeers(HttpExchange ex) throws IOException {
+		if (!requireGet(ex)) {
+			return;
+		}
+		NodeId infohash;
+		try {
+			infohash = NodeId.fromHex(queryParam(ex, "infohash"));
+		} catch (RuntimeException badHash) {
+			sendJson(ex, 400, "{\"error\":\"missing or malformed infohash\"}");
+			return;
+		}
+		TransferService.Peek peek = transfer.peek(infohash);
+		if (peek == null) {
+			sendJson(ex, 200, "{\"found\":false}");
+			return;
+		}
+		sendJson(ex, 200, new Json()
+				.bool("found", true)
+				.str("infohash", infohash.toString())
+				.num("peers", peek.peers())
+				.num("pieceSize", peek.pieceSize())
+				.num("totalLength", peek.totalLength())
+				.num("pieceCount", peek.pieceCount())
+				.end());
+	}
+
 	private void handleDownload(HttpExchange ex) throws IOException {
 		if (!requireMethod(ex, "POST")) {
 			return;
@@ -389,6 +424,8 @@ public final class ApiServer implements Closeable {
 				.num("inFlight", p.inFlight())
 				.num("total", p.total())
 				.num("peers", p.peers())
+				.num("seeders", p.seeders())
+				.num("leechers", p.leechers())
 				.byteArray("pieceStates", p.pieceStates())
 				.end());
 	}
