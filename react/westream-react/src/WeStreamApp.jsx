@@ -3,7 +3,7 @@ import {
   buildPieces, peers, buildSwarm, shares, downloads,
   buildBuckets, storedKeys, rpcLog,
 } from "./data";
-import { useStatus, useRouting, useProgress, useTransfers, useRpcLog, useDhtKeys, bucketsFromSizes, buildSwarmFrom, stripFromProgress, libraryFromTransfers, rpcLogFromEvents, storedKeysFrom, humanBytes, formatId, shortId, formatUptime } from "./hooks";
+import { useStatus, useRouting, useProgress, useTransfers, useRpcLog, useDhtKeys, useThroughput, bucketsFromSizes, buildSwarmFrom, stripFromProgress, libraryFromTransfers, rpcLogFromEvents, storedKeysFrom, humanBytes, formatId, shortId, formatUptime } from "./hooks";
 import { share as apiShare, startDownload as apiDownload, streamUrl } from "./api";
 
 /* ------------------------------------------------------------------
@@ -33,6 +33,12 @@ function css(str) {
     o[k] = v;
   }
   return o;
+}
+
+/** Format a bytes/sec rate as a MB/s number string ("—" when unknown). */
+function mbps(bytesPerSec) {
+  if (bytesPerSec == null) return "—";
+  return (bytesPerSec / 1e6).toFixed(1);
 }
 
 const KEYFRAMES = `
@@ -78,6 +84,7 @@ export default function WeStreamApp() {
 
   // ---- live engine data (falls back to mock until the first fetch lands) ----
   const status = useStatus();
+  const throughput = useThroughput(status.data); // { down, up } bytes/sec, or null
   const routing = useRouting();
   const playerProgress = useProgress(currentInfohash);
   const transfers = useTransfers();
@@ -94,7 +101,10 @@ export default function WeStreamApp() {
   const peerCount = status.data ? status.data.peerCount : 24;
   const youLabel = status.data ? shortId(status.data.nodeId) : "4287ad37";
   const prog = playerProgress.data;
-  const pieces = (prog && prog.active && prog.pieceStates) ? stripFromProgress(prog) : buildPieces();
+  // Render the real strip whenever the engine gives piece states — an active
+  // download OR a seed/complete file (active:false but seeding:true). Mock only
+  // when there is genuinely no data (e.g. before the first poll).
+  const pieces = (prog && prog.pieceStates && prog.pieceStates.length) ? stripFromProgress(prog) : buildPieces();
   // Native-style window controls: macOS puts traffic lights on the left, Windows
   // (and Linux) put min/max/close on the right. Default to the right elsewhere.
   const isMac = (window.westream?.platform || "") === "darwin";
@@ -134,10 +144,10 @@ export default function WeStreamApp() {
           <div style={css("display:flex;align-items:center;gap:6px;padding:5px 11px;background:#1b1722;border:1px solid #2c2638;border-radius:999px;color:#ada3bd")}>
             <span style={{ color: "#c64ff0" }}>●</span> {peerCount} peers
           </div>
-          {/* The engine has no throughput meter yet, so rates are honestly "—" (not fabricated). */}
+          {/* Live node-wide throughput (real PIECE bytes/sec); "—" until two samples land. */}
           <div style={css("display:flex;align-items:center;gap:5px;padding:5px 11px;background:#1b1722;border:1px solid #2c2638;border-radius:999px")}>
-            <span style={{ color: "#6cc8e8" }}>↓ —</span><span style={{ color: "#756c85" }}>MB/s</span>
-            <span style={{ color: "#ee7fb0", marginLeft: 4 }}>↑ —</span><span style={{ color: "#756c85" }}>MB/s</span>
+            <span style={{ color: "#6cc8e8" }}>↓ {mbps(throughput?.down)}</span><span style={{ color: "#756c85" }}>MB/s</span>
+            <span style={{ color: "#ee7fb0", marginLeft: 4 }}>↑ {mbps(throughput?.up)}</span><span style={{ color: "#756c85" }}>MB/s</span>
           </div>
         </div>
 
@@ -200,8 +210,8 @@ export default function WeStreamApp() {
 
         {/* ===== MAIN ===== */}
         <main className="ws-scroll" style={css("flex:1;min-width:0;overflow:auto;background:radial-gradient(1100px 600px at 78% -8%, rgba(198,79,240,0.07), transparent 60%), #0f0d15")}>
-          {screen === "player" && <PlayerScreen pieces={pieces} infohash={currentInfohash} progress={prog} swarm={swarm} peerCount={peerCount} onSwarm={() => setScreen("swarm")} onAdd={() => setScreen("add")} />}
-          {screen === "swarm" && <SwarmScreen swarm={swarm} peerCount={peerCount} youLabel={youLabel} />}
+          {screen === "player" && <PlayerScreen pieces={pieces} infohash={currentInfohash} progress={prog} swarm={swarm} peerCount={peerCount} throughput={throughput} onSwarm={() => setScreen("swarm")} onAdd={() => setScreen("add")} />}
+          {screen === "swarm" && <SwarmScreen swarm={swarm} peerCount={peerCount} youLabel={youLabel} throughput={throughput} />}
           {screen === "home" && <LibraryScreen library={library} onPlayer={() => setScreen("player")} onAdd={() => setScreen("add")} onPlay={(ih) => { setCurrentInfohash(ih); setScreen("player"); }} />}
           {screen === "add" && <AddStreamScreen
             onStream={(ih) => { setCurrentInfohash(ih); setScreen("player"); }}
@@ -214,7 +224,7 @@ export default function WeStreamApp() {
 }
 
 /* ===================== PLAYER ===================== */
-function PlayerScreen({ pieces, infohash, progress, swarm = [], peerCount = 0, onSwarm, onAdd }) {
+function PlayerScreen({ pieces, infohash, progress, swarm = [], peerCount = 0, throughput = null, onSwarm, onAdd }) {
   const [vstat, setVstat] = useState(null); // null | "buffering" | "error" — from the <video> events
   const [copied, setCopied] = useState(false);
   const shareInfohash = () => {
@@ -331,7 +341,7 @@ function PlayerScreen({ pieces, infohash, progress, swarm = [], peerCount = 0, o
           <span style={css("font:600 11px 'JetBrains Mono';color:#c64ff0;background:rgba(198,79,240,0.13);padding:3px 9px;border-radius:999px")}>{peerCount} peers</span>
         </div>
         <div style={css("display:flex;gap:10px")}>
-          {[["DOWNLOAD", "—", "#6cc8e8"], ["UPLOAD", "—", "#ee7fb0"]].map(([l, v, c]) => (
+          {[["DOWNLOAD", mbps(throughput?.down), "#6cc8e8"], ["UPLOAD", mbps(throughput?.up), "#ee7fb0"]].map(([l, v, c]) => (
             <div key={l} style={css("flex:1;padding:12px;background:#15111d;border:1px solid #221d2c;border-radius:12px")}>
               <div style={css("font-family:'JetBrains Mono',monospace;font-size:10px;color:#756c85;margin-bottom:4px")}>{l}</div>
               <div style={css("font-size:18px;font-weight:800;color:" + c)}>{v}<span style={css("font-size:11px;color:#756c85;font-weight:600")}> MB/s</span></div>
@@ -350,9 +360,7 @@ function PlayerScreen({ pieces, infohash, progress, swarm = [], peerCount = 0, o
                   <span style={css("font-family:'JetBrains Mono',monospace;font-size:11.5px;color:#e7e1ef;font-weight:600")}>{pr.id.length > 12 ? pr.id.slice(0, 10) + "…" : pr.id}</span>
                   <span style={css("font-size:10px;color:#5f5670")}>{pr.loc}</span>
                 </div>
-                <div style={css("margin-top:5px;height:4px;border-radius:999px;background:#221d2c;overflow:hidden")}>
-                  <div style={css("height:100%;background:linear-gradient(90deg,#9b3ec9,#c64ff0);width:" + pr.have)} />
-                </div>
+                <div style={css("margin-top:4px;font:500 9.5px 'JetBrains Mono';color:#5f5670")}>XOR dist {pr.dist}</div>
               </div>
               <div style={css("text-align:right;flex-shrink:0")}>
                 <div style={css("font-family:'JetBrains Mono',monospace;font-size:11px;color:#6cc8e8")}>↓{pr.down}</div>
@@ -368,11 +376,12 @@ function PlayerScreen({ pieces, infohash, progress, swarm = [], peerCount = 0, o
 }
 
 /* ===================== SWARM ===================== */
-function SwarmScreen({ swarm, peerCount = 24, youLabel = "4287ad37" }) {
-  // down/up/share-ratio are honestly "—" — the engine has no per-transfer throughput meter yet.
+function SwarmScreen({ swarm, peerCount = 24, youLabel = "4287ad37", throughput = null }) {
+  // DOWNLOAD/UPLOAD are the real node-wide rate; SHARE RATIO and the per-peer columns
+  // stay "—" (no per-peer meter, and these rows are DHT contacts, not transfer peers).
   const stats = [
     ["CONNECTED PEERS", String(peerCount), "#f4f1f8"], ["SWARM HEALTH", peerCount > 0 ? "Excellent" : "Alone", "#46d39a"],
-    ["DOWNLOAD", "—", "#6cc8e8"], ["UPLOAD", "—", "#ee7fb0"], ["SHARE RATIO", "—", "#f4f1f8"],
+    ["DOWNLOAD", mbps(throughput?.down), "#6cc8e8"], ["UPLOAD", mbps(throughput?.up), "#ee7fb0"], ["SHARE RATIO", "—", "#f4f1f8"],
   ];
   return (
     <section style={css("padding:22px 24px 30px")}>
@@ -440,12 +449,7 @@ function SwarmScreen({ swarm, peerCount = 24, youLabel = "4287ad37" }) {
             </div>
             <span style={css("font-size:12.5px;color:#b3aac0")}>{n.loc}</span>
             <span style={css("font:500 11.5px 'JetBrains Mono';color:#8b8299")}>{n.lat}</span>
-            <div style={css("display:flex;align-items:center;gap:9px")}>
-              <div style={css("flex:1;height:5px;border-radius:999px;background:#221d2c;overflow:hidden")}>
-                <div style={css("height:100%;background:linear-gradient(90deg,#9b3ec9,#c64ff0);width:" + n.have)} />
-              </div>
-              <span style={css("font:500 10.5px 'JetBrains Mono';color:#8b8299;width:32px;text-align:right")}>{n.have}</span>
-            </div>
+            <span style={css("font:500 11.5px 'JetBrains Mono';color:#5f5670")} title="piece availability is only known for active transfer peers, not DHT contacts">{n.have}</span>
             <span style={css("font:600 11.5px 'JetBrains Mono';color:#6cc8e8")}>{n.down}</span>
             <span style={css("font:600 11.5px 'JetBrains Mono';color:#ee7fb0")}>{n.up}</span>
             <span style={css("font:500 11px 'JetBrains Mono';color:" + n.connColor)}>{n.conn}</span>

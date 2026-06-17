@@ -59,6 +59,31 @@ export const useRpcLog = () => usePoll(getRpcLog, 1000);
 /** Poll the local DHT store snapshot at 2s (drives the inspector's "Stored keys" panel). */
 export const useDhtKeys = () => usePoll(getDhtKeys, 2000);
 
+/**
+ * Node-wide down/up throughput in bytes/sec, derived from successive /api/status
+ * samples (the engine exposes cumulative upBytes/downBytes; the rate is the delta
+ * over the poll gap). Fed the EXISTING useStatus data, so it adds no extra poll.
+ * Returns null until it has two samples to diff; the rate is a coarse ~1s average.
+ */
+export function useThroughput(statusData) {
+  const prev = useRef(null);
+  const [rate, setRate] = useState(null);
+  useEffect(() => {
+    if (!statusData || statusData.upBytes == null) return;
+    const now = { up: statusData.upBytes, down: statusData.downBytes, t: Date.now() };
+    const p = prev.current;
+    if (p && now.t > p.t) {
+      const dt = (now.t - p.t) / 1000;
+      setRate({
+        down: Math.max(0, (now.down - p.down) / dt),
+        up: Math.max(0, (now.up - p.up) / dt),
+      });
+    }
+    prev.current = now;
+  }, [statusData]);
+  return rate;
+}
+
 /** /api/dht/keys → the Stored-keys rows the DHT inspector renders (key id + honest placeholders). */
 export function storedKeysFrom(dht) {
   return (dht.keys || []).map((k) => ({
@@ -212,7 +237,9 @@ export function buildSwarmFrom(contacts) {
       down: "—", up: "—",
       loc: `${c.host}:${c.port}`,
       lat: "—",
-      have: (hashHex(c.id) % 60 + 40) + "%",
+      // These are DHT routing-table peers, not transfer peers — we don't know their
+      // piece availability, so "have" is honestly unknown (no fabricated percentage).
+      have: "—",
       conn: "DHT",
       dist: "0x" + c.id.slice(0, 4),
       active: true,
