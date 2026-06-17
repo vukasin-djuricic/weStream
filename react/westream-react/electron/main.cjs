@@ -95,8 +95,8 @@ function createWindow() {
   const win = new BrowserWindow({
     width: 1340,
     height: 840,
-    minWidth: 1100,
-    minHeight: 720,
+    minWidth: 600,
+    minHeight: 540,
     frame: false, // custom title bar lives in the React app
     backgroundColor: "#0f0d15",
     show: false,

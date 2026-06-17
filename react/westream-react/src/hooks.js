@@ -46,6 +46,20 @@ export function usePoll(fetchFn, intervalMs) {
 export const useStatus = () => usePoll(getStatus, 1000);
 export const useRouting = () => usePoll(getRouting, 1000);
 
+/**
+ * Track the window's inner width so a screen can collapse side panels on a
+ * narrow window (the user tiles 3 nodes side-by-side on one display).
+ */
+export function useWindowWidth() {
+  const [w, setW] = useState(typeof window !== "undefined" ? window.innerWidth : 1340);
+  useEffect(() => {
+    const onResize = () => setW(window.innerWidth);
+    window.addEventListener("resize", onResize);
+    return () => window.removeEventListener("resize", onResize);
+  }, []);
+  return w;
+}
+
 /** Poll a download's live progress at 500ms (faster — it drives the piece strip). No-op when infohash is null. */
 export const useProgress = (infohash) =>
   usePoll(() => (infohash ? getProgress(infohash) : Promise.resolve(null)), 500);

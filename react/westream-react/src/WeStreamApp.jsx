@@ -3,7 +3,7 @@ import {
   buildPieces, peers, buildSwarm, shares, downloads,
   buildBuckets, storedKeys, rpcLog,
 } from "./data";
-import { useStatus, useRouting, useProgress, useTransfers, useRpcLog, useDhtKeys, useThroughput, bucketsFromSizes, buildSwarmFrom, leecherCards, stripFromProgress, libraryFromTransfers, rpcLogFromEvents, storedKeysFrom, humanBytes, formatId, shortId, formatUptime } from "./hooks";
+import { useStatus, useRouting, useProgress, useTransfers, useRpcLog, useDhtKeys, useThroughput, useWindowWidth, bucketsFromSizes, buildSwarmFrom, leecherCards, stripFromProgress, libraryFromTransfers, rpcLogFromEvents, storedKeysFrom, humanBytes, formatId, shortId, formatUptime } from "./hooks";
 import { share as apiShare, startDownload as apiDownload, streamUrl } from "./api";
 
 /* ------------------------------------------------------------------
@@ -241,6 +241,9 @@ function PlayerScreen({ pieces, infohash, progress, swarm = [], peerCount = 0, t
   const inFlight = progress ? progress.inFlight : 0;
   const frac = total > 0 ? have / total : 0;
   const pct = Math.round(frac * 100) + "%";
+  // Collapse the 322px swarm rail on a narrow window (3 nodes tiled on one
+  // display) so the video keeps room; "View full swarm map" still reaches it.
+  const showRail = useWindowWidth() >= 900;
   return (
     <section style={css("display:flex;min-height:100%")}>
       <div style={css("flex:1;min-width:0;padding:22px 24px;display:flex;flex-direction:column")}>
@@ -337,7 +340,8 @@ function PlayerScreen({ pieces, infohash, progress, swarm = [], peerCount = 0, t
         </div>
       </div>
 
-      {/* live swarm rail */}
+      {/* live swarm rail — hidden on a narrow window to give the video room */}
+      {showRail && (
       <aside className="ws-scroll" style={css("width:322px;flex-shrink:0;border-left:1px solid #221d2c;background:#131019;padding:20px 18px;display:flex;flex-direction:column;gap:16px;overflow:auto")}>
         <div style={css("display:flex;align-items:center;justify-content:space-between")}>
           <h2 style={css("margin:0;font-size:14px;font-weight:800")}>{progress?.seeding ? "Leechers" : "Live swarm"}</h2>
@@ -374,6 +378,7 @@ function PlayerScreen({ pieces, infohash, progress, swarm = [], peerCount = 0, t
         </div>
         <Hover as="button" onClick={onSwarm} base="margin-top:auto;padding:11px;background:#1a1623;border:1px solid #271f33;border-radius:11px;color:#c7bfd6;font:600 12.5px 'Manrope';cursor:pointer" hover="background:#221d2c">View full swarm map →</Hover>
       </aside>
+      )}
     </section>
   );
 }
