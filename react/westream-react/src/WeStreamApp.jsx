@@ -1,10 +1,10 @@
-import React, { useState } from "react";
+import React, { useState, useEffect } from "react";
 import {
   buildPieces, peers, buildSwarm, shares, downloads,
   buildBuckets, storedKeys, rpcLog,
 } from "./data";
 import { useStatus, useRouting, useProgress, useTransfers, useRpcLog, useDhtKeys, useThroughput, useWindowWidth, bucketsFromSizes, buildSwarmFrom, leecherCards, stripFromProgress, libraryFromTransfers, rpcLogFromEvents, storedKeysFrom, humanBytes, formatId, shortId, formatUptime } from "./hooks";
-import { share as apiShare, startDownload as apiDownload, streamUrl } from "./api";
+import { share as apiShare, startDownload as apiDownload, peekPeers as apiPeek, streamUrl } from "./api";
 
 /* ------------------------------------------------------------------
    weStream — Phase 5 Player  (Direction A · Midnight Neon)
@@ -347,6 +347,17 @@ function PlayerScreen({ pieces, infohash, progress, swarm = [], peerCount = 0, t
           <h2 style={css("margin:0;font-size:14px;font-weight:800")}>{progress?.seeding ? "Leechers" : "Live swarm"}</h2>
           <span style={css("font:600 11px 'JetBrains Mono';color:#c64ff0;background:rgba(198,79,240,0.13);padding:3px 9px;border-radius:999px")}>{swarm.length} {progress?.seeding ? "downloading" : "peers"}</span>
         </div>
+        {/* Real seeder/leecher split of the peers we pull FROM (from their bitfields) — download side only */}
+        {progress && !progress.seeding && progress.peers > 0 && (
+          <div style={css("display:flex;gap:10px")}>
+            {[["SEEDERS", progress.seeders || 0, "#74e3b0"], ["LEECHERS", progress.leechers || 0, "#e7b0f0"]].map(([l, v, c]) => (
+              <div key={l} style={css("flex:1;padding:10px 12px;background:#15111d;border:1px solid #221d2c;border-radius:12px")}>
+                <div style={css("font-family:'JetBrains Mono',monospace;font-size:10px;color:#756c85;margin-bottom:4px")}>{l}</div>
+                <div style={css("font-size:18px;font-weight:800;color:" + c)}>{v}</div>
+              </div>
+            ))}
+          </div>
+        )}
         <div style={css("display:flex;gap:10px")}>
           {[["DOWNLOAD", mbps(throughput?.down), "#6cc8e8"], ["UPLOAD", mbps(throughput?.up), "#ee7fb0"]].map(([l, v, c]) => (
             <div key={l} style={css("flex:1;padding:12px;background:#15111d;border:1px solid #221d2c;border-radius:12px")}>
@@ -560,8 +571,32 @@ function AddStreamScreen({ onStream, onDownloaded }) {
   const [msg, setMsg] = useState(null); // { text, ok }
   const [busy, setBusy] = useState(false);
   const [resolved, setResolved] = useState(null); // real metadata from a resolve/share, or null
+  const [peek, setPeek] = useState(null); // null | {status:'looking'|'found'|'none', peers, totalLength, pieceCount}
   const HEX40 = /^[0-9a-fA-F]{40}$/;
   const inputStyle = css("flex:1;min-width:0;background:transparent;border:none;outline:none;font:500 13px 'JetBrains Mono';color:#e7e1ef");
+
+  // Live DHT peek: when a valid infohash is entered, resolve its metadata + swarm
+  // size WITHOUT downloading (debounced), so the user sees how many peers hold the
+  // file before committing. Honest count — the DHT peer set has no seeder/leecher
+  // flag, so this is the whole swarm; the S/L split shows live during the transfer.
+  useEffect(() => {
+    const ih = infohash.trim().toLowerCase();
+    if (!HEX40.test(ih)) { setPeek(null); return; }
+    let alive = true;
+    setPeek({ status: "looking" });
+    const t = setTimeout(async () => {
+      try {
+        const r = await apiPeek(ih);
+        if (!alive) return;
+        setPeek(r.found
+          ? { status: "found", peers: r.peers, totalLength: r.totalLength, pieceCount: r.pieceCount }
+          : { status: "none" });
+      } catch {
+        if (alive) setPeek({ status: "none" });
+      }
+    }, 450);
+    return () => { alive = false; clearTimeout(t); };
+  }, [infohash]);
 
   const doDownload = async (thenStream) => {
     if (busy) return; // ignore re-clicks while a request is in flight
@@ -615,18 +650,36 @@ function AddStreamScreen({ onStream, onDownloaded }) {
               <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#c64ff0" strokeWidth="2"><circle cx="12" cy="12" r="3" /><path d="M12 2v4M12 18v4M2 12h4M18 12h4" /></svg>
               <input value={infohash} onChange={(e) => setInfohash(e.target.value)} placeholder="paste a 40-hex infohash" style={inputStyle} />
             </div>
-            <Hover as="button" onClick={() => doDownload(false)} base="display:flex;align-items:center;gap:8px;padding:0 20px;background:linear-gradient(135deg,#c64ff0,#9b3ec9);border:none;border-radius:12px;color:#fff;font:700 13px 'Manrope';cursor:pointer;white-space:nowrap" hover="filter:brightness(1.1)">Resolve →</Hover>
+            <Hover as="button" onClick={() => doDownload(false)} disabled={busy || peek?.status === "none"} base={"display:flex;align-items:center;gap:8px;padding:0 20px;border:none;border-radius:12px;color:#fff;font:700 13px 'Manrope';white-space:nowrap;" + (busy || peek?.status === "none" ? "background:#2c2638;color:#6b6379;cursor:not-allowed" : "background:linear-gradient(135deg,#c64ff0,#9b3ec9);cursor:pointer")} hover={busy || peek?.status === "none" ? "" : "filter:brightness(1.1)"}>
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 3v12M7 11l5 4 5-4M5 20h14" /></svg>
+              {busy ? "Starting…" : "Download"}
+            </Hover>
           </div>
-          <div style={css("display:flex;align-items:center;gap:12px;margin-top:16px;padding:13px 15px;background:#100d17;border:1px solid #1c1826;border-radius:12px")}>
-            <span style={css("width:24px;height:24px;border-radius:50%;background:linear-gradient(150deg,#c64ff0,#7c2fd0);display:flex;align-items:center;justify-content:center;font:800 8px 'Manrope';color:#fff")}>YOU</span>
-            <div style={css("flex:1;display:flex;align-items:center;gap:6px")}>
-              <span style={css("font:600 9.5px 'JetBrains Mono';color:#c08fe8")}>FIND_VALUE</span>
-              <span style={css("flex:1;height:1px;background:repeating-linear-gradient(90deg,#3a3148,#3a3148 4px,transparent 4px,transparent 8px)")} />
-              {[0, 1, 2].map((i) => <span key={i} style={css("width:8px;height:8px;border-radius:50%;border:1.5px solid #6cc8e8")} />)}
-              <span style={css("flex:1;height:1px;background:repeating-linear-gradient(90deg,#3a3148,#3a3148 4px,transparent 4px,transparent 8px)")} />
-              <span style={css("font:600 9.5px 'JetBrains Mono';color:#74e3b0")}>VALUE</span>
+          {/* live DHT peek — real swarm size, resolved without downloading (replaces the old static FIND_VALUE diagram) */}
+          <div style={css("display:flex;align-items:center;gap:11px;margin-top:14px;padding:12px 15px;background:#100d17;border:1px solid #1c1826;border-radius:12px;min-height:22px")}>
+            <span style={css("width:24px;height:24px;flex-shrink:0;border-radius:50%;background:linear-gradient(150deg,#c64ff0,#7c2fd0);display:flex;align-items:center;justify-content:center;font:800 8px 'Manrope';color:#fff")}>YOU</span>
+            <div style={css("flex:1;min-width:0;display:flex;align-items:center;gap:9px;flex-wrap:wrap;font:600 11px 'JetBrains Mono'")}>
+              {!peek && <span style={css("color:#5f5670")}>Paste an infohash to look up its swarm in the DHT</span>}
+              {peek?.status === "looking" && (<>
+                <span style={css("width:8px;height:8px;border-radius:50%;background:#6cc8e8;animation:wsPulse 1.2s infinite")} />
+                <span style={css("color:#6cc8e8")}>FIND_VALUE… resolving in the DHT</span>
+              </>)}
+              {peek?.status === "none" && (<>
+                <span style={css("width:8px;height:8px;border-radius:50%;background:#f0795e")} />
+                <span style={css("color:#f0795e")}>Not announced in the DHT — no one is sharing this infohash</span>
+              </>)}
+              {peek?.status === "found" && (<>
+                <span style={css("width:8px;height:8px;border-radius:50%;background:#74e3b0;box-shadow:0 0 8px rgba(70,211,154,0.6)")} />
+                <span style={css("color:#74e3b0")}>{peek.peers} {peek.peers === 1 ? "peer" : "peers"} in swarm</span>
+                <span style={css("color:#322b40")}>·</span>
+                <span style={css("color:#a99fbb")}>{humanBytes(peek.totalLength)}</span>
+                <span style={css("color:#322b40")}>·</span>
+                <span style={css("color:#a99fbb")}>{peek.pieceCount} pieces</span>
+              </>)}
             </div>
-            <span style={css("font:600 11px 'JetBrains Mono';color:#74e3b0;white-space:nowrap")}>peer set</span>
+            {peek?.status === "found" && (
+              <span title="The DHT peer set has no seeder-vs-leecher flag — this is the whole swarm. The seeders/leechers split is shown live once the download connects and reads each peer's bitfield." style={css("flex-shrink:0;font:600 9.5px 'JetBrains Mono';color:#5f5670;cursor:help")}>ⓘ S / L live during transfer</span>
+            )}
           </div>
         </div>
 

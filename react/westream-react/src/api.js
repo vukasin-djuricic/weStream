@@ -42,6 +42,9 @@ export const getRouting = () => getJson("/api/routing");
 export const dhtGet = (key) => getJson(`/api/dht/get?key=${encodeURIComponent(key)}`);
 export const getProgress = (infohash) =>
   getJson(`/api/progress?infohash=${encodeURIComponent(infohash)}`);
+// Lightweight DHT peek: resolve metadata + swarm size WITHOUT downloading.
+export const peekPeers = (infohash) =>
+  getJson(`/api/peers?infohash=${encodeURIComponent(infohash)}`);
 export const getTransfers = () => getJson("/api/transfers");
 export const getRpcLog = () => getJson("/api/rpclog");
 export const getDhtKeys = () => getJson("/api/dht/keys");
