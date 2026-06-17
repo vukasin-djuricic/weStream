@@ -102,6 +102,12 @@ public final class PeerConnection implements Closeable {
 		return remoteBitfield;
 	}
 
+	/** The remote socket endpoint as {@code host:port} (for diagnostics / the leecher list). */
+	public String remoteAddress() {
+		java.net.SocketAddress a = socket.getRemoteSocketAddress();
+		return a == null ? "?" : a.toString().replaceFirst("^/", "");
+	}
+
 	// -------------------------------------------------------------- sends
 
 	public void sendHandshake() throws IOException {

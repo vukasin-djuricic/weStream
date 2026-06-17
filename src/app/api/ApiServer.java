@@ -30,6 +30,7 @@ import core.kademlia.RpcLog;
 import core.transfer.Bitfield;
 import core.transfer.DownloadSession;
 import core.transfer.PieceStore;
+import core.transfer.SeedSession;
 import core.transfer.TorrentMetadata;
 import core.transfer.TransferService;
 
@@ -355,6 +356,18 @@ public final class ApiServer implements Closeable {
 			for (int i = 0; i < total; i++) {
 				states[i] = bits.get(i) ? DownloadSession.HAVE : DownloadSession.MISSING;
 			}
+			// Real leecher list: who is pulling from us + how much each one already has
+			// (from the BITFIELD/HAVE messages they send us — see SeedSession.leechers()).
+			List<SeedSession.Leecher> leechers = transfer.leechers(infohash);
+			List<String> leecherJson = new ArrayList<>();
+			for (SeedSession.Leecher l : leechers) {
+				leecherJson.add(new Json()
+						.str("id", l.id())
+						.str("endpoint", l.endpoint())
+						.num("have", l.have())
+						.num("total", l.total())
+						.end());
+			}
 			sendJson(ex, 200, new Json()
 					.bool("active", false)
 					.bool("seeding", true)
@@ -362,7 +375,8 @@ public final class ApiServer implements Closeable {
 					.num("have", bits.cardinality())
 					.num("inFlight", 0)
 					.num("total", total)
-					.num("peers", 0)
+					.num("peers", leechers.size())
+					.raw("leechers", Json.array(leecherJson))
 					.byteArray("pieceStates", states)
 					.end());
 			return;

@@ -262,6 +262,16 @@ public class ApiCheck {
 			check("infohash parses via NodeId.fromHex",
 					NodeId.fromHex(infohash).toString().equals(infohash));
 
+			// Re-sharing the same file is idempotent: same infohash, and NO duplicate
+			// seed/Library entry (the reported bug: clicking Share twice stacked items).
+			Response share2 = http("POST", seedPort, "/api/share",
+					new Json().str("path", src.toString()).end());
+			check("re-share -> 200 same infohash",
+					share2.code == 200 && infohash.equals(extract(share2.body, "infohash")));
+			String afterReshare = http("GET", seedPort, "/api/transfers").body;
+			int dupes = afterReshare.split("\"infohash\":\"" + infohash + "\"", -1).length - 1;
+			check("re-share does not duplicate the Library entry (count==1)", dupes == 1);
+
 			// --- download on node 2 (non-blocking); out defaults to the (temp) cache dir
 			Response dl = http("POST", leechPort, "/api/download",
 					new Json().str("infohash", infohash).end());
@@ -319,6 +329,12 @@ public class ApiCheck {
 					seedProgress.contains("\"seeding\":true") && seedProgress.contains("\"pieceStates\""));
 			check("seeder progress reports the whole file (have:3, total:3)",
 					seedProgress.contains("\"have\":3") && seedProgress.contains("\"total\":3"));
+			// The seeder lists who is pulling from it (real leecher: endpoint + the
+			// leecher's own piece availability from the BITFIELD/HAVE it sent us).
+			check("seeder lists the leecher pulling from it",
+					!seedProgress.contains("\"peers\":0")
+							&& seedProgress.contains("\"leechers\":[{")
+							&& seedProgress.contains("\"endpoint\":\"127.0.0.1:"));
 
 			// --- throughput meter source: /api/status exposes cumulative PIECE byte
 			// counters, and they moved during the transfer above.

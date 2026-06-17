@@ -3,6 +3,7 @@ package core.transfer;
 import java.io.Closeable;
 import java.io.IOException;
 import java.net.Socket;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
 
@@ -43,6 +44,38 @@ public final class SeedSession implements Closeable {
 				// best effort
 			}
 		}
+	}
+
+	/** The file this session seeds. */
+	public NodeId infohash() {
+		return meta.infohash();
+	}
+
+	/** How many peers are currently connected (i.e. downloading from us). */
+	public int peerCount() {
+		return connections.size();
+	}
+
+	/**
+	 * Snapshot of the peers currently pulling from this seed, with how much of the
+	 * file each holds. The availability is <em>real</em>, not inferred: each leecher
+	 * sends us its BITFIELD on connect and a HAVE per verified piece (standard
+	 * BitTorrent gossip), which {@link PeerConnection} tracks in {@code remoteBitfield}.
+	 */
+	public List<Leecher> leechers() {
+		List<Leecher> out = new ArrayList<>();
+		int total = meta.pieceCount();
+		for (PeerConnection c : connections) {
+			Bitfield bf = c.remoteBitfield();
+			int have = (bf == null) ? 0 : bf.cardinality();
+			NodeId id = c.remoteId();
+			out.add(new Leecher(id == null ? null : id.toString(), c.remoteAddress(), have, total));
+		}
+		return out;
+	}
+
+	/** One connected leecher: who it is, where, and how much of the file it holds. */
+	public record Leecher(String id, String endpoint, int have, int total) {
 	}
 
 	private final class Responder implements PeerConnection.Listener {

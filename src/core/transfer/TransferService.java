@@ -163,6 +163,12 @@ public final class TransferService implements Closeable {
 	/** Split + hash {@code file}, seed it on an ephemeral TCP port, and announce it in the DHT. */
 	public TorrentMetadata share(Path file, int pieceSize) throws IOException {
 		TorrentMetadata meta = PieceHasher.fromFile(file, pieceSize);
+		// Idempotent: if we already seed this exact content, don't spin up a second
+		// seed/server/DHT entry (which would also show a duplicate Library card).
+		// The original share's periodic re-announce keeps the swarm fresh.
+		if (seedFor(meta.infohash()) != null) {
+			return meta;
+		}
 		// Seed read-only: the source file is served, never resized or written
 		// (works on read-only files and never mutates the user's original).
 		PieceStore store = PieceStore.forSeeding(file, meta);
@@ -339,6 +345,25 @@ public final class TransferService implements Closeable {
 		return null;
 	}
 
+	/** The seed session for {@code infohash} (a file we fully share), or null. */
+	private SeedSession seedFor(NodeId infohash) {
+		for (SeedSession s : seeds) {
+			if (s.infohash().equals(infohash)) {
+				return s;
+			}
+		}
+		return null;
+	}
+
+	/**
+	 * The peers currently downloading {@code infohash} from this node (with each
+	 * one's real piece availability), or an empty list if we don't seed it.
+	 */
+	public List<SeedSession.Leecher> leechers(NodeId infohash) {
+		SeedSession seed = seedFor(infohash);
+		return (seed == null) ? List.of() : seed.leechers();
+	}
+
 	/** Cumulative PIECE bytes this node has uploaded (for the throughput meter). */
 	public long uploadedBytes() {
 		return PeerConnection.uploadedBytes();
@@ -359,9 +384,11 @@ public final class TransferService implements Closeable {
 		for (PieceStore s : stores) {
 			TorrentMetadata m = s.metadata();
 			NodeId ih = m.infohash();
+			SeedSession seed = seedFor(ih);
+			int peers = (seed == null) ? 0 : seed.peerCount(); // real leechers, not a hard-coded 0
 			out.add(new Transfer(ih.toString(), sharedNames.getOrDefault(ih, ih.toString()),
 					m.totalLength(), m.pieceCount(), true,
-					m.pieceCount(), m.pieceCount(), 0, true));
+					m.pieceCount(), m.pieceCount(), peers, true));
 		}
 		for (Map.Entry<NodeId, DownloadSession> e : active.entrySet()) {
 			NodeId ih = e.getKey();
