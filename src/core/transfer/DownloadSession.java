@@ -4,7 +4,9 @@ import java.io.Closeable;
 import java.io.IOException;
 import java.net.Socket;
 import java.nio.file.Path;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
@@ -28,9 +30,15 @@ public final class DownloadSession implements PeerConnection.Listener, Closeable
 	private final PieceStore store;
 	private final NodeId localId;
 	private final PiecePicker picker;
-	private final int maxInFlight;
+	private final int maxInFlight;     // global ceiling across ALL peers (keeps the stream window ahead)
+	private final int perPeerInFlight; // per-socket ceiling, so no single peer hogs the whole budget
 
+	/** Pieces requested anywhere, for dedup + progress (a piece is never requested from two peers). */
 	private final Set<Integer> inFlight = ConcurrentHashMap.newKeySet();
+	/** Per-peer requested set: which pieces are outstanding TO each peer (bounds each socket, releases on close). */
+	private final Map<PeerConnection, Set<Integer>> requestedTo = new ConcurrentHashMap<>();
+	/** Per-peer delivered count: how many verified pieces each peer actually gave us (diagnostics/fair-share proof). */
+	private final Map<PeerConnection, Integer> deliveredBy = new ConcurrentHashMap<>();
 	private final List<PeerConnection> peers = new CopyOnWriteArrayList<>();
 	private final CountDownLatch done = new CountDownLatch(1);
 
@@ -39,11 +47,12 @@ public final class DownloadSession implements PeerConnection.Listener, Closeable
 	private volatile Runnable firstPieceCallback;
 
 	public DownloadSession(TorrentMetadata meta, Path outPath, NodeId localId,
-			PiecePicker picker, int maxInFlight) throws IOException {
+			PiecePicker picker, int maxInFlight, int perPeerInFlight) throws IOException {
 		this.meta = meta;
 		this.localId = localId;
 		this.picker = picker;
 		this.maxInFlight = Math.max(1, maxInFlight);
+		this.perPeerInFlight = Math.max(1, perPeerInFlight);
 		this.store = new PieceStore(outPath, meta);
 		if (store.isComplete()) {
 			done.countDown();
@@ -119,7 +128,17 @@ public final class DownloadSession implements PeerConnection.Listener, Closeable
 				pieceStates[i] = MISSING;
 			}
 		}
-		return new Progress(bits.cardinality(), inFlightCount, total, peers.size(), pieceStates);
+		// Real seeder/leecher split among the peers we pull FROM: a seeder has the
+		// whole file (a complete bitfield); the rest are partial leechers. Peers whose
+		// BITFIELD hasn't arrived yet (null) count as leechers, not seeders — honest.
+		int seeders = 0;
+		for (PeerConnection c : peers) {
+			Bitfield rb = c.remoteBitfield();
+			if (rb != null && rb.cardinality() == total) {
+				seeders++;
+			}
+		}
+		return new Progress(bits.cardinality(), inFlightCount, total, peers.size(), seeders, pieceStates);
 	}
 
 	/** Per-piece state byte in {@link Progress#pieceStates}: not yet requested. */
@@ -134,9 +153,14 @@ public final class DownloadSession implements PeerConnection.Listener, Closeable
 	 * {@link #MISSING}/{@link #IN_FLIGHT}/{@link #HAVE} — the exact input the
 	 * sliding-window strip renders.
 	 */
-	public record Progress(int have, int inFlight, int total, int peers, byte[] pieceStates) {
+	public record Progress(int have, int inFlight, int total, int peers, int seeders, byte[] pieceStates) {
 		public double fraction() {
 			return total == 0 ? 1.0 : (double) have / total;
+		}
+
+		/** Connected peers that are NOT complete seeders — partial leechers we also pull from. */
+		public int leechers() {
+			return peers - seeders;
 		}
 	}
 
@@ -150,13 +174,13 @@ public final class DownloadSession implements PeerConnection.Listener, Closeable
 	@Override
 	public void onBitfield(PeerConnection c) {
 		picker.onPeerBitfield(c.remoteBitfield());
-		fillPipeline(c);
+		pump();
 	}
 
 	@Override
 	public void onHave(PeerConnection c, int index) {
 		picker.onHave(index);
-		fillPipeline(c);
+		pump();
 	}
 
 	@Override
@@ -174,8 +198,9 @@ public final class DownloadSession implements PeerConnection.Listener, Closeable
 	@Override
 	public void onPiece(PeerConnection c, int index, byte[] block) {
 		boolean accepted = (index >= 0 && index < meta.pieceCount()) && store.writePiece(index, block);
-		inFlight.remove(index); // re-pickable if rejected
+		releaseRequest(c, index); // free the slot (global + this peer); re-pickable if rejected
 		if (accepted) {
+			deliveredBy.merge(c, 1, Integer::sum); // who actually fed us — for fair-share diagnostics
 			if (firstPieceFired.compareAndSet(false, true)) {
 				Runnable cb = firstPieceCallback;
 				if (cb != null) {
@@ -193,39 +218,68 @@ public final class DownloadSession implements PeerConnection.Listener, Closeable
 				done.countDown();
 			}
 		}
-		fillPipeline(c);
+		pump(); // top EVERY peer back up — not just c — so an idle seeder gets work
 	}
 
 	@Override
-	public void onClosed(PeerConnection c) {
+	public synchronized void onClosed(PeerConnection c) {
 		peers.remove(c);
+		// Release the dead peer's outstanding requests so the rest of the swarm can
+		// re-pick them (otherwise those pieces leak in inFlight and the download stalls).
+		// Synchronized so this can't interleave with pump() mutating the same sets.
+		Set<Integer> orphaned = requestedTo.remove(c);
+		if (orphaned != null) {
+			inFlight.removeAll(orphaned);
+		}
+		pump();
+	}
+
+	/** Free a delivered/rejected piece's slot, globally and on the peer it was requested from. */
+	private synchronized void releaseRequest(PeerConnection c, int index) {
+		inFlight.remove(index);
+		Set<Integer> mine = requestedTo.get(c);
+		if (mine != null) {
+			mine.remove(index);
+		}
 	}
 
 	/**
-	 * Request as many pickable pieces from {@code c} as the in-flight ceiling
-	 * allows. Synchronized so concurrent reader threads keep {@code inFlight} and
-	 * the picker consistent.
+	 * Top EVERY connected peer up to its per-peer in-flight ceiling, subject to the
+	 * global ceiling, picking pieces that peer actually has. Because the {@code inFlight}
+	 * set is shared, no two peers are sent the same piece, so the work spreads across
+	 * the swarm instead of one peer (whose bitfield happened to arrive first) hogging
+	 * the whole global budget. Synchronized so concurrent reader threads keep the
+	 * shared/per-peer sets and the picker consistent.
 	 */
-	private synchronized void fillPipeline(PeerConnection c) {
-		Bitfield available = c.remoteBitfield();
-		if (available == null) {
-			return;
+	private synchronized void pump() {
+		for (PeerConnection c : peers) {
+			Bitfield available = c.remoteBitfield();
+			if (available == null) {
+				continue; // its bitfield hasn't arrived yet — nothing to ask for
+			}
+			Set<Integer> mine = requestedTo.computeIfAbsent(c, k -> new HashSet<>());
+			while (mine.size() < perPeerInFlight && inFlight.size() < maxInFlight) {
+				int index = picker.pick(store.bitfield(), available, inFlight);
+				if (index < 0) {
+					break; // this peer has nothing new to offer right now
+				}
+				if (!inFlight.add(index)) {
+					continue; // already claimed (defensive — picker excludes inFlight)
+				}
+				try {
+					c.sendRequest(index);
+					mine.add(index);
+				} catch (IOException e) {
+					inFlight.remove(index);
+					break;
+				}
+			}
 		}
-		while (inFlight.size() < maxInFlight) {
-			int index = picker.pick(store.bitfield(), available, inFlight);
-			if (index < 0) {
-				break;
-			}
-			if (!inFlight.add(index)) {
-				continue;
-			}
-			try {
-				c.sendRequest(index);
-			} catch (IOException e) {
-				inFlight.remove(index);
-				break;
-			}
-		}
+	}
+
+	/** Distinct peers that have delivered at least one verified piece (fair-share diagnostics/tests). */
+	public int contributingPeerCount() {
+		return deliveredBy.size();
 	}
 
 	@Override

@@ -45,6 +45,13 @@ public final class TransferService implements Closeable {
 	private static final int DOWNLOAD_TIMEOUT_MS = 30_000;
 	private static final int MAX_IN_FLIGHT = 16;
 	/**
+	 * Per-peer in-flight ceiling (≤ {@link #MAX_IN_FLIGHT}). Bounds how many requests
+	 * any single socket may hold, so a download from N seeds genuinely spreads across
+	 * them instead of the first seeder (whose bitfield arrived first) hogging the whole
+	 * global budget. At 8, two seeds split 8/8 within the 16-piece global ceiling.
+	 */
+	private static final int PER_PEER_IN_FLIGHT = 8;
+	/**
 	 * Sliding-window size for streaming downloads. Kept strictly larger than
 	 * {@link #MAX_IN_FLIGHT} so the high-priority window always has unrequested
 	 * slack ahead of the playhead — otherwise the in-flight ceiling fills with
@@ -195,6 +202,33 @@ public final class TransferService implements Closeable {
 		return meta;
 	}
 
+	/** A lightweight DHT lookup result: the file's metadata + current swarm size,
+	 *  resolved WITHOUT starting a download. {@code peers} is the number of endpoints
+	 *  currently announced in the infohash's peer set (the DHT does not record who is
+	 *  a complete seeder vs a partial leecher — that split is only known once we
+	 *  connect and read each peer's bitfield during a transfer). */
+	public record Peek(long totalLength, int pieceCount, int pieceSize, int peers) {
+	}
+
+	/**
+	 * Resolve {@code infohash}'s metadata and count its live swarm via the DHT,
+	 * WITHOUT connecting or downloading — backs the Add-Stream "peek" so the user
+	 * sees how many peers hold the file before committing to a download. Returns
+	 * {@code null} if no metadata is announced for the infohash.
+	 *
+	 * <p>The {@code findValue}/{@code getPeers} below block on the DHT — call from an
+	 * HTTP/app thread, never the UDP receive thread.
+	 */
+	public Peek peek(NodeId infohash) throws IOException {
+		byte[] metaBytes = dht.findValue(infohash);
+		if (metaBytes == null) {
+			return null;
+		}
+		TorrentMetadata meta = decodeMetadata(metaBytes);
+		List<PeerStore.PeerEntry> swarm = dht.getPeers(infohash);
+		return new Peek(meta.totalLength(), meta.pieceCount(), meta.pieceSize(), swarm.size());
+	}
+
 	/**
 	 * Resolve {@code infohash} via the DHT and download the file to {@code out}.
 	 * Returns false (quickly) if no one has announced the infohash, or if the
@@ -212,7 +246,7 @@ public final class TransferService implements Closeable {
 		}
 		// Download mode uses rarest-first; the sliding-window picker is the streaming path (Phase 5).
 		DownloadSession dl = new DownloadSession(
-				meta, out, selfId, new RarestFirstPicker(meta.pieceCount()), MAX_IN_FLIGHT);
+				meta, out, selfId, new RarestFirstPicker(meta.pieceCount()), MAX_IN_FLIGHT, PER_PEER_IN_FLIGHT);
 		try {
 			if (connectToSwarm(dl, swarm) == 0) {
 				return false; // every announced peer was unreachable
@@ -257,7 +291,7 @@ public final class TransferService implements Closeable {
 			Files.createDirectories(parent); // create the cache dir only once a download truly starts
 		}
 		DownloadSession dl = new DownloadSession(
-				meta, out, selfId, new SlidingWindowPicker(meta.pieceCount(), STREAM_WINDOW), MAX_IN_FLIGHT);
+				meta, out, selfId, new SlidingWindowPicker(meta.pieceCount(), STREAM_WINDOW), MAX_IN_FLIGHT, PER_PEER_IN_FLIGHT);
 
 		// Become a findable partial seed: an inbound server serves whatever pieces
 		// this download already holds, and we join the swarm on the first verified

@@ -321,7 +321,7 @@ public class TransferCheck {
 			server.start();
 
 			PiecePicker picker = new SlidingWindowPicker(meta.pieceCount(), 4);
-			dl = new DownloadSession(meta, out, NodeId.fromEndpoint("dl", 2), picker, 8);
+			dl = new DownloadSession(meta, out, NodeId.fromEndpoint("dl", 2), picker, 8, 8);
 			dl.addPeer(new Socket("127.0.0.1", server.getLocalPort()));
 
 			check("download completes", dl.awaitCompletion(10_000));
@@ -441,7 +441,10 @@ public class TransferCheck {
 				nodes.get(i).bootstrap(nodes.get(0).self());
 			}
 
-			byte[] content = deterministicBytes(512 * 6 + 77, 4); // 7 pieces at 512
+			// 40 pieces at 512: large enough that a per-peer cap (8) forces BOTH seeds to
+			// serve pieces (neither can hold the whole file in flight), so we can prove
+			// the swarm actually spreads the work — not just connects two sockets.
+			byte[] content = deterministicBytes(512 * 40, 4);
 			src = writeTempFile(content);
 			out = Files.createTempFile("westream-swarm-dl", ".bin");
 
@@ -463,6 +466,12 @@ public class TransferCheck {
 			check("download connects to BOTH seeds", dl != null && dl.peerCount() == 2);
 			check("multi-peer download completes", dl != null && dl.awaitCompletion(10_000));
 			check("swarm-downloaded file byte-identical", Arrays.equals(Files.readAllBytes(out), content));
+			// The fix: per-peer in-flight cap + re-pump all peers means the work spreads
+			// across the swarm. Both seeds must have actually delivered pieces (regression
+			// for the bug where the first seeder to send its bitfield hogged the whole
+			// global budget and the second one starved).
+			check("download pulled pieces from BOTH seeds (not just one)",
+					dl != null && dl.contributingPeerCount() == 2);
 		} finally {
 			if (seed0 != null) {
 				seed0.close();
