@@ -51,6 +51,13 @@ public final class TransferService implements Closeable {
 	 * fallback (far) pieces and neutralizes the window's near-playhead priority.
 	 */
 	private static final int STREAM_WINDOW = 32;
+	/**
+	 * Upper bound on pieces for a shared file, so the metadata announce (every
+	 * piece's 20-byte hash) fits one UDP datagram. 2048 pieces → ~40 KB of hashes,
+	 * comfortably under {@link core.kademlia.UdpTransport#MAX_PACKET} (64 KB) with
+	 * room for the STORE framing/endpoint overhead. Drives {@link #pieceSizeFor}.
+	 */
+	private static final int MAX_ANNOUNCE_PIECES = 2048;
 	/** Defensive cap when parsing DHT metadata (guards against a hostile value). */
 	private static final int MAX_PIECES = 1 << 20;
 	/** Max simultaneous peer connections per download (bounds fan-out). */
@@ -126,15 +133,39 @@ public final class TransferService implements Closeable {
 		}
 	}
 
-	/** Share {@code file} with the default piece size. */
+	/**
+	 * Share {@code file}, auto-scaling the piece size so the announce fits the wire.
+	 *
+	 * <p>The full torrent metadata (every 20-byte piece hash) rides in a single DHT
+	 * value sent over one UDP datagram ({@link core.kademlia.UdpTransport#MAX_PACKET},
+	 * 64 KB). With the fixed {@link TorrentMetadata#DEFAULT_PIECE_SIZE} (256 KB) a
+	 * file over ~800 MB produces more hashes than fit in a datagram and the STORE
+	 * fails. So we grow the piece size for large files to keep the hash count (and
+	 * thus the announce) bounded — see {@link #pieceSizeFor}.
+	 */
 	public TorrentMetadata share(Path file) throws IOException {
-		return share(file, TorrentMetadata.DEFAULT_PIECE_SIZE);
+		return share(file, pieceSizeFor(Files.size(file)));
+	}
+
+	/** Smallest power-of-two piece size that keeps the piece count (and the DHT
+	 *  announce it produces) within {@link #MAX_ANNOUNCE_PIECES}, starting from the
+	 *  256 KB default. Capped at 64 MB pieces (only relevant for &gt;128 GB files,
+	 *  far past this app's scope). Package-visible for the regression check. */
+	static int pieceSizeFor(long fileSize) {
+		int pieceSize = TorrentMetadata.DEFAULT_PIECE_SIZE;
+		while (pieceSize < (1 << 26)
+				&& (fileSize + pieceSize - 1) / pieceSize > MAX_ANNOUNCE_PIECES) {
+			pieceSize <<= 1;
+		}
+		return pieceSize;
 	}
 
 	/** Split + hash {@code file}, seed it on an ephemeral TCP port, and announce it in the DHT. */
 	public TorrentMetadata share(Path file, int pieceSize) throws IOException {
 		TorrentMetadata meta = PieceHasher.fromFile(file, pieceSize);
-		PieceStore store = new PieceStore(file, meta);
+		// Seed read-only: the source file is served, never resized or written
+		// (works on read-only files and never mutates the user's original).
+		PieceStore store = PieceStore.forSeeding(file, meta);
 		store.verifyAndMarkExisting();
 
 		SeedSession seed = new SeedSession(store, selfId);
@@ -327,9 +358,13 @@ public final class TransferService implements Closeable {
 			DownloadSession dl = e.getValue();
 			TorrentMetadata m = dl.store().metadata();
 			DownloadSession.Progress p = dl.progress();
+			// A finished download is a full seed: its SeedSession server serves every
+			// piece and it re-announces to the swarm, so report seeding once complete
+			// (an in-progress download is still seeding:false).
+			boolean complete = dl.isComplete();
 			out.add(new Transfer(ih.toString(), downloadNames.getOrDefault(ih, ih.toString()),
-					m.totalLength(), m.pieceCount(), false,
-					p.have(), p.total(), p.peers(), dl.isComplete()));
+					m.totalLength(), m.pieceCount(), complete,
+					p.have(), p.total(), p.peers(), complete));
 		}
 		return out;
 	}

@@ -21,12 +21,30 @@ public final class PieceStore implements Closeable {
 	private final TorrentMetadata meta;
 	private final Bitfield have;
 
-	/** Open {@code path} for read/write, pre-sized to the full file length. */
+	/** Open {@code path} for read/write, pre-sized to the full file length — the
+	 *  download sink (pieces get written + verified into it). */
 	public PieceStore(Path path, TorrentMetadata meta) throws IOException {
+		this(path, meta, true);
+	}
+
+	/**
+	 * Open an existing, already-complete file <em>read-only</em> for seeding: never
+	 * resized, never written. Use this for {@code share} so a read-only source file
+	 * (e.g. a movie on a read-only volume, or any file we must not modify) can still
+	 * be served. {@link #writePiece} fails cleanly on such a store (a seed never
+	 * writes), and the user's original bytes are guaranteed untouched.
+	 */
+	public static PieceStore forSeeding(Path path, TorrentMetadata meta) throws IOException {
+		return new PieceStore(path, meta, false);
+	}
+
+	private PieceStore(Path path, TorrentMetadata meta, boolean writable) throws IOException {
 		this.meta = meta;
 		this.have = new Bitfield(meta.pieceCount());
-		this.file = new RandomAccessFile(path.toFile(), "rw");
-		this.file.setLength(meta.totalLength());
+		this.file = new RandomAccessFile(path.toFile(), writable ? "rw" : "r");
+		if (writable) {
+			this.file.setLength(meta.totalLength());
+		}
 	}
 
 	/**

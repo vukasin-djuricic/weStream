@@ -303,9 +303,13 @@ public class ApiCheck {
 					seederTransfers.contains("\"infohash\":\"" + infohash + "\""));
 			check("seeder transfer marked seeding", seederTransfers.contains("\"seeding\":true"));
 			String leecherTransfers = http("GET", leechPort, "/api/transfers").body;
-			check("leecher /api/transfers lists the download (seeding:false)",
-					leecherTransfers.contains("\"infohash\":\"" + infohash + "\"")
-							&& leecherTransfers.contains("\"seeding\":false"));
+			// The leecher finished the download above, so it is now a full seed: a
+			// completed download must report seeding:true (regression — it used to be
+			// hard-coded false even when complete, so the UI never showed it seeding).
+			check("leecher /api/transfers lists the download",
+					leecherTransfers.contains("\"infohash\":\"" + infohash + "\""));
+			check("completed leecher reports seeding:true",
+					leecherTransfers.contains("\"seeding\":true"));
 
 			// --- /api/rpclog (live RPC activity — the nodes did bootstrap/find/store RPCs)
 			String rpc = http("GET", seedPort, "/api/rpclog").body;

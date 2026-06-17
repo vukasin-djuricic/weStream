@@ -40,6 +40,14 @@ public final class PeerConnection implements Closeable {
 	private final int pieceCount;
 	private final TransferCodec codec = new TransferCodec();
 
+	/**
+	 * Optional, node-wide upload throttle (shared across every connection). Null
+	 * unless {@code WS_THROTTLE_KBPS}/{@code westream.throttleKbps} is set, so the
+	 * hot path pays nothing in normal runs — see {@link RateLimiter}. Read once at
+	 * class load (the env/property is fixed for the JVM's lifetime).
+	 */
+	private static final RateLimiter UPLOAD_THROTTLE = RateLimiter.fromEnv();
+
 	private volatile Listener listener;
 	private volatile NodeId remoteId;
 	private volatile Bitfield remoteBitfield; // learned from BITFIELD, mutated by HAVE
@@ -94,6 +102,17 @@ public final class PeerConnection implements Closeable {
 	}
 
 	public void sendPiece(int index, byte[] block) throws IOException {
+		// Pace the bulk PIECE bytes when a throttle is configured (demo/congestion
+		// simulation). PIECE carries ~all the traffic; REQUEST/HAVE/BITFIELD are tiny,
+		// so this single hook is enough to cap a node's effective upload rate.
+		if (UPLOAD_THROTTLE != null) {
+			try {
+				UPLOAD_THROTTLE.acquire(block.length);
+			} catch (InterruptedException e) {
+				Thread.currentThread().interrupt();
+				throw new IOException("upload throttle interrupted", e);
+			}
+		}
 		send(TransferMessage.piece(index, block));
 	}
 

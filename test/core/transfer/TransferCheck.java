@@ -36,6 +36,8 @@ public class TransferCheck {
 		runGroup("piece model (no sockets)", TransferCheck::pieceModelChecks);
 		runGroup("transfer wire (codec + framing)", TransferCheck::wireChecks);
 		runGroup("picker ordering (unit)", TransferCheck::pickerChecks);
+		runGroup("announce piece sizing (unit)", TransferCheck::pieceSizingChecks);
+		runGroup("upload throttle (unit)", TransferCheck::throttleChecks);
 		runGroup("end-to-end transfer (real localhost TCP)", TransferCheck::endToEndChecks);
 		runGroup("DHT discovery + announce (real UDP + TCP)", TransferCheck::dhtDiscoveryChecks);
 		runGroup("multi-peer swarm (two seeds, real UDP + TCP)", TransferCheck::multiPeerChecks);
@@ -89,6 +91,21 @@ public class TransferCheck {
 						Arrays.equals(store.readPiece(2), slice(content, meta.offsetOfPiece(2), meta.lengthOfPiece(2))));
 			}
 			check("reconstructed file byte-identical", Arrays.equals(Files.readAllBytes(out), content));
+
+			// Seeding a READ-ONLY source must work (regression: share() opened the file
+			// "rw" + setLength, which fails with "Access is denied" on a read-only file
+			// — exactly what blocked sharing a movie on a read-only volume).
+			boolean madeReadOnly = src.toFile().setWritable(false);
+			try (PieceStore seed = PieceStore.forSeeding(src, meta)) {
+				check("read-only source set non-writable", madeReadOnly);
+				check("seed opens + verifies a read-only file",
+						seed.verifyAndMarkExisting() == meta.pieceCount() && seed.isComplete());
+				check("seed read-only writePiece fails cleanly",
+						!seed.writePiece(0, slice(content, 0, meta.lengthOfPiece(0))));
+			} finally {
+				src.toFile().setWritable(true); // let the temp file be deleted on cleanup
+			}
+			check("seeding never changed the source bytes", Arrays.equals(Files.readAllBytes(src), content));
 
 			// A corrupted piece (right length, wrong bytes) is rejected and leaves the bit clear.
 			try (PieceStore store = new PieceStore(badOut, meta)) {
@@ -182,6 +199,56 @@ public class TransferCheck {
 			new TransferCodec().readFrame(new DataInputStream(new ByteArrayInputStream(b.toByteArray())));
 		});
 		checkThrows("bad ordinal rejected", () -> new TransferCodec().decodeBody(new byte[] { (byte) 99 }));
+	}
+
+	/**
+	 * {@link TransferService#pieceSizeFor} must keep the piece count (hence the
+	 * single-datagram metadata announce) bounded for large files. Regression for
+	 * the 1.8 GB share that overflowed the 64 KB UDP packet with 256 KB pieces.
+	 */
+	private static void pieceSizingChecks() {
+		int dflt = TorrentMetadata.DEFAULT_PIECE_SIZE; // 256 KB
+		check("small file keeps default piece size", TransferService.pieceSizeFor(10L << 20) == dflt);
+
+		long[] sizes = {800L << 20, 1827038238L /* the Sherlock file */, 8L << 30, 50L << 30};
+		for (long size : sizes) {
+			int ps = TransferService.pieceSizeFor(size);
+			long pieceCount = (size + ps - 1) / ps;
+			check("piece size is power-of-two for " + size, (ps & (ps - 1)) == 0);
+			check("piece size never below default for " + size, ps >= dflt);
+			check("piece count bounded for " + size + " (" + pieceCount + " pieces)",
+					pieceCount <= 2048);
+			// The announce blob (20 bytes/hash + small header) must clear the 64 KB datagram.
+			check("metadata hashes fit a UDP datagram for " + size,
+					pieceCount * 20 + 64 < 64 * 1024);
+		}
+		// The Sherlock file specifically must land on 1 MB pieces.
+		check("1.8 GB file scales to 1 MB pieces",
+				TransferService.pieceSizeFor(1827038238L) == (1 << 20));
+	}
+
+	/**
+	 * {@link RateLimiter} must be off unless configured, let a one-second burst
+	 * through instantly, then pace bytes beyond it at the set rate. This is what
+	 * makes the sliding-window demo observable (throttled seed upload).
+	 */
+	private static void throttleChecks() throws Exception {
+		// Off by default — no env/property set during the test run.
+		check("throttle off by default (fromEnv null)", RateLimiter.fromEnv() == null);
+
+		RateLimiter rl = new RateLimiter(10_000); // 10 KB/s, 10 KB burst bucket
+		long t0 = System.nanoTime();
+		rl.acquire(10_000); // drains the burst — should be effectively instant
+		long burstMs = (System.nanoTime() - t0) / 1_000_000;
+		check("burst passes without blocking (" + burstMs + " ms)", burstMs < 100);
+
+		long t1 = System.nanoTime();
+		rl.acquire(5_000); // 5 KB of debt at 10 KB/s ≈ 500 ms
+		long pacedMs = (System.nanoTime() - t1) / 1_000_000;
+		// Lower bound only (sleep never returns early); generous upper bound for slow CI.
+		check("over-budget send is paced (" + pacedMs + " ms ~ 500)", pacedMs >= 400 && pacedMs < 3000);
+
+		checkThrows("rejects non-positive rate", () -> new RateLimiter(0));
 	}
 
 	private static void pickerChecks() {
