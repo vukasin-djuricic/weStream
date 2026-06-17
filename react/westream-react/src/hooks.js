@@ -255,6 +255,28 @@ export function buildSwarmFrom(contacts) {
   });
 }
 
+/**
+ * /api/progress `leechers` (the peers currently pulling from this seed) → the
+ * peer-rail card shape, carrying each one's REAL availability (have/total from the
+ * bitfield they sent us). Unlike the DHT swarm, this is the actual transfer set.
+ */
+export function leecherCards(leechers) {
+  return (leechers || []).map((l) => {
+    const id = l.id || "unknown";
+    const [tint, glow] = TINTS[hashHex(id) % TINTS.length];
+    const pct = l.total > 0 ? Math.round((l.have / l.total) * 100) : 0;
+    return {
+      id,
+      glyph: id.slice(0, 2).toUpperCase(),
+      tint, glow,
+      loc: l.endpoint,
+      down: "—",
+      havePct: pct + "%",
+      dist: "0x" + id.slice(0, 4),
+    };
+  });
+}
+
 /** milliseconds → "1h 4m" / "14m 22s". */
 export function formatUptime(ms) {
   const s = Math.floor(ms / 1000);

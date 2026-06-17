@@ -3,7 +3,7 @@ import {
   buildPieces, peers, buildSwarm, shares, downloads,
   buildBuckets, storedKeys, rpcLog,
 } from "./data";
-import { useStatus, useRouting, useProgress, useTransfers, useRpcLog, useDhtKeys, useThroughput, bucketsFromSizes, buildSwarmFrom, stripFromProgress, libraryFromTransfers, rpcLogFromEvents, storedKeysFrom, humanBytes, formatId, shortId, formatUptime } from "./hooks";
+import { useStatus, useRouting, useProgress, useTransfers, useRpcLog, useDhtKeys, useThroughput, bucketsFromSizes, buildSwarmFrom, leecherCards, stripFromProgress, libraryFromTransfers, rpcLogFromEvents, storedKeysFrom, humanBytes, formatId, shortId, formatUptime } from "./hooks";
 import { share as apiShare, startDownload as apiDownload, streamUrl } from "./api";
 
 /* ------------------------------------------------------------------
@@ -105,6 +105,9 @@ export default function WeStreamApp() {
   // download OR a seed/complete file (active:false but seeding:true). Mock only
   // when there is genuinely no data (e.g. before the first poll).
   const pieces = (prog && prog.pieceStates && prog.pieceStates.length) ? stripFromProgress(prog) : buildPieces();
+  // When viewing a file we SEED, the player's peer rail shows the real leechers
+  // pulling from us (with their true have%); otherwise it shows the DHT swarm.
+  const playerPeers = (prog && prog.seeding && prog.leechers) ? leecherCards(prog.leechers) : swarm;
   // Native-style window controls: macOS puts traffic lights on the left, Windows
   // (and Linux) put min/max/close on the right. Default to the right elsewhere.
   const isMac = (window.westream?.platform || "") === "darwin";
@@ -210,7 +213,7 @@ export default function WeStreamApp() {
 
         {/* ===== MAIN ===== */}
         <main className="ws-scroll" style={css("flex:1;min-width:0;overflow:auto;background:radial-gradient(1100px 600px at 78% -8%, rgba(198,79,240,0.07), transparent 60%), #0f0d15")}>
-          {screen === "player" && <PlayerScreen pieces={pieces} infohash={currentInfohash} progress={prog} swarm={swarm} peerCount={peerCount} throughput={throughput} onSwarm={() => setScreen("swarm")} onAdd={() => setScreen("add")} />}
+          {screen === "player" && <PlayerScreen pieces={pieces} infohash={currentInfohash} progress={prog} swarm={playerPeers} peerCount={peerCount} throughput={throughput} onSwarm={() => setScreen("swarm")} onAdd={() => setScreen("add")} />}
           {screen === "swarm" && <SwarmScreen swarm={swarm} peerCount={peerCount} youLabel={youLabel} throughput={throughput} />}
           {screen === "home" && <LibraryScreen library={library} onPlayer={() => setScreen("player")} onAdd={() => setScreen("add")} onPlay={(ih) => { setCurrentInfohash(ih); setScreen("player"); }} />}
           {screen === "add" && <AddStreamScreen
@@ -337,8 +340,8 @@ function PlayerScreen({ pieces, infohash, progress, swarm = [], peerCount = 0, t
       {/* live swarm rail */}
       <aside className="ws-scroll" style={css("width:322px;flex-shrink:0;border-left:1px solid #221d2c;background:#131019;padding:20px 18px;display:flex;flex-direction:column;gap:16px;overflow:auto")}>
         <div style={css("display:flex;align-items:center;justify-content:space-between")}>
-          <h2 style={css("margin:0;font-size:14px;font-weight:800")}>Live swarm</h2>
-          <span style={css("font:600 11px 'JetBrains Mono';color:#c64ff0;background:rgba(198,79,240,0.13);padding:3px 9px;border-radius:999px")}>{peerCount} peers</span>
+          <h2 style={css("margin:0;font-size:14px;font-weight:800")}>{progress?.seeding ? "Leechers" : "Live swarm"}</h2>
+          <span style={css("font:600 11px 'JetBrains Mono';color:#c64ff0;background:rgba(198,79,240,0.13);padding:3px 9px;border-radius:999px")}>{swarm.length} {progress?.seeding ? "downloading" : "peers"}</span>
         </div>
         <div style={css("display:flex;gap:10px")}>
           {[["DOWNLOAD", mbps(throughput?.down), "#6cc8e8"], ["UPLOAD", mbps(throughput?.up), "#ee7fb0"]].map(([l, v, c]) => (
@@ -360,7 +363,7 @@ function PlayerScreen({ pieces, infohash, progress, swarm = [], peerCount = 0, t
                   <span style={css("font-family:'JetBrains Mono',monospace;font-size:11.5px;color:#e7e1ef;font-weight:600")}>{pr.id.length > 12 ? pr.id.slice(0, 10) + "…" : pr.id}</span>
                   <span style={css("font-size:10px;color:#5f5670")}>{pr.loc}</span>
                 </div>
-                <div style={css("margin-top:4px;font:500 9.5px 'JetBrains Mono';color:#5f5670")}>XOR dist {pr.dist}</div>
+                <div style={css("margin-top:4px;font:500 9.5px 'JetBrains Mono';color:" + (pr.havePct ? "#74e3b0" : "#5f5670"))}>{pr.havePct ? "has " + pr.havePct + " of file" : "XOR dist " + pr.dist}</div>
               </div>
               <div style={css("text-align:right;flex-shrink:0")}>
                 <div style={css("font-family:'JetBrains Mono',monospace;font-size:11px;color:#6cc8e8")}>↓{pr.down}</div>
@@ -556,6 +559,7 @@ function AddStreamScreen({ onStream, onDownloaded }) {
   const inputStyle = css("flex:1;min-width:0;background:transparent;border:none;outline:none;font:500 13px 'JetBrains Mono';color:#e7e1ef");
 
   const doDownload = async (thenStream) => {
+    if (busy) return; // ignore re-clicks while a request is in flight
     const ih = infohash.trim().toLowerCase();
     if (!HEX40.test(ih)) { setMsg({ text: "Infohash must be 40 hex characters.", ok: false }); return; }
     setBusy(true);
@@ -572,9 +576,11 @@ function AddStreamScreen({ onStream, onDownloaded }) {
   };
 
   const doShare = async () => {
+    if (busy) return; // ignore re-clicks while hashing/sharing is in flight (no duplicate shares)
     const p = sharePath.trim();
     if (!p) { setMsg({ text: "Enter a file path to share.", ok: false }); return; }
     setBusy(true);
+    setMsg({ text: "Hashing & sharing… (large files take a few seconds)", ok: true });
     try {
       const r = await apiShare(p);
       setInfohash(r.infohash);
@@ -673,7 +679,7 @@ function AddStreamScreen({ onStream, onDownloaded }) {
                 Browse…
               </Hover>
             )}
-            <Hover as="button" onClick={doShare} base="display:flex;align-items:center;gap:8px;padding:0 22px;background:linear-gradient(135deg,#c64ff0,#9b3ec9);border:none;border-radius:11px;color:#fff;font:700 13px 'Manrope';cursor:pointer;white-space:nowrap" hover="filter:brightness(1.1)">Share</Hover>
+            <Hover as="button" onClick={doShare} disabled={busy} base={"display:flex;align-items:center;gap:8px;padding:0 22px;background:linear-gradient(135deg,#c64ff0,#9b3ec9);border:none;border-radius:11px;color:#fff;font:700 13px 'Manrope';white-space:nowrap;cursor:" + (busy ? "wait" : "pointer") + ";opacity:" + (busy ? "0.6" : "1")} hover="filter:brightness(1.1)">{busy ? "Sharing…" : "Share"}</Hover>
           </div>
         </div>
       </div>
