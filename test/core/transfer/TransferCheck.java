@@ -249,6 +249,27 @@ public class TransferCheck {
 		check("over-budget send is paced (" + pacedMs + " ms ~ 500)", pacedMs >= 400 && pacedMs < 3000);
 
 		checkThrows("rejects non-positive rate", () -> new RateLimiter(0));
+
+		// Regression (starvation): acquire() must not hold its lock while sleeping, or a
+		// continuously-requesting connection starves every other one -- the symptom was
+		// a second downloader from one throttled seed sitting at 0 B/s.
+		RateLimiter shared = new RateLimiter(200_000); // 200 KB/s shared bucket
+		java.util.concurrent.atomic.AtomicBoolean stop = new java.util.concurrent.atomic.AtomicBoolean(false);
+		Thread hammer = new Thread(() -> {
+			try { while (!stop.get()) shared.acquire(20_000); } catch (InterruptedException ignored) { }
+		});
+		hammer.setDaemon(true);
+		Thread other = new Thread(() -> {
+			try { for (int i = 0; i < 3; i++) shared.acquire(20_000); } catch (InterruptedException ignored) { }
+		});
+		other.setDaemon(true);
+		hammer.start();
+		other.start();
+		other.join(6000); // the "second downloader" must finish despite the hammerer
+		boolean otherFinished = !other.isAlive();
+		stop.set(true);
+		other.interrupt();
+		check("throttle shares fairly (concurrent acquirer not starved)", otherFinished);
 	}
 
 	private static void pickerChecks() {

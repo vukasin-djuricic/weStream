@@ -43,17 +43,22 @@ public final class RateLimiter {
 	 * the time needed to accrue it — this is what enforces the average rate without
 	 * any busy-wait (blueprint rule #4).
 	 */
-	public synchronized void acquire(int bytes) throws InterruptedException {
+	public void acquire(int bytes) throws InterruptedException {
 		if (bytes <= 0) {
 			return;
 		}
-		refill();
-		tokens -= bytes;
-		if (tokens < 0) {
-			long sleepMs = (long) Math.ceil(-tokens / bytesPerSec * 1000.0);
-			if (sleepMs > 0) {
-				Thread.sleep(sleepMs);
-			}
+		long sleepMs;
+		synchronized (this) {
+			refill();
+			tokens -= bytes;
+			sleepMs = tokens < 0 ? (long) Math.ceil(-tokens / bytesPerSec * 1000.0) : 0;
+		}
+		// Sleep OUTSIDE the lock. Holding the monitor across the sleep serialized every
+		// upload and starved all but one connection (a second downloader pulling from the
+		// same throttled seed sat at 0 B/s). Deduct under the lock, then sleep unlocked,
+		// so every connection shares the bucket fairly.
+		if (sleepMs > 0) {
+			Thread.sleep(sleepMs);
 		}
 	}
 
