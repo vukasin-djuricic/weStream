@@ -8,6 +8,7 @@ import java.io.DataOutputStream;
 import java.io.IOException;
 import java.net.Socket;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicLong;
 
 import core.kademlia.NodeId;
 
@@ -47,6 +48,24 @@ public final class PeerConnection implements Closeable {
 	 * class load (the env/property is fixed for the JVM's lifetime).
 	 */
 	private static final RateLimiter UPLOAD_THROTTLE = RateLimiter.fromEnv();
+
+	/**
+	 * Process-wide cumulative PIECE-payload bytes sent / received, for the
+	 * throughput meter. Static = per-JVM = per-node in production (one node per
+	 * JVM); the UI derives a rate from the delta between successive samples.
+	 */
+	private static final AtomicLong UP_BYTES = new AtomicLong();
+	private static final AtomicLong DOWN_BYTES = new AtomicLong();
+
+	/** Cumulative PIECE bytes uploaded by this node so far. */
+	public static long uploadedBytes() {
+		return UP_BYTES.get();
+	}
+
+	/** Cumulative PIECE bytes downloaded by this node so far. */
+	public static long downloadedBytes() {
+		return DOWN_BYTES.get();
+	}
 
 	private volatile Listener listener;
 	private volatile NodeId remoteId;
@@ -114,6 +133,7 @@ public final class PeerConnection implements Closeable {
 			}
 		}
 		send(TransferMessage.piece(index, block));
+		UP_BYTES.addAndGet(block.length);
 	}
 
 	private synchronized void send(TransferMessage m) throws IOException {
@@ -170,6 +190,9 @@ public final class PeerConnection implements Closeable {
 				}
 				break;
 			case PIECE:
+				if (m.block != null) {
+					DOWN_BYTES.addAndGet(m.block.length);
+				}
 				if (l != null) {
 					l.onPiece(this, m.index, m.block);
 				}

@@ -27,6 +27,7 @@ import core.kademlia.KademliaService;
 import core.kademlia.NodeId;
 import core.kademlia.RoutingTable;
 import core.kademlia.RpcLog;
+import core.transfer.Bitfield;
 import core.transfer.DownloadSession;
 import core.transfer.PieceStore;
 import core.transfer.TorrentMetadata;
@@ -122,6 +123,8 @@ public final class ApiServer implements Closeable {
 				.num("apiPort", boundPort())
 				.num("uptimeMs", uptimeMillis.getAsLong())
 				.num("peerCount", kademlia.routingTable().size())
+				.num("upBytes", transfer.uploadedBytes())
+				.num("downBytes", transfer.downloadedBytes())
 				.end();
 		sendJson(ex, 200, body);
 	}
@@ -338,7 +341,30 @@ public final class ApiServer implements Closeable {
 		}
 		DownloadSession dl = transfer.session(infohash);
 		if (dl == null) {
-			sendJson(ex, 200, "{\"active\":false}");
+			// Not an active download. We may still be SEEDING this file (complete on
+			// disk) — report a real snapshot from the seed store so the Player shows
+			// the true piece map (a full strip) instead of falling back to mock.
+			PieceStore seed = transfer.seedStore(infohash);
+			if (seed == null) {
+				sendJson(ex, 200, "{\"active\":false}");
+				return;
+			}
+			int total = seed.metadata().pieceCount();
+			Bitfield bits = seed.bitfield();
+			byte[] states = new byte[total];
+			for (int i = 0; i < total; i++) {
+				states[i] = bits.get(i) ? DownloadSession.HAVE : DownloadSession.MISSING;
+			}
+			sendJson(ex, 200, new Json()
+					.bool("active", false)
+					.bool("seeding", true)
+					.bool("complete", seed.isComplete())
+					.num("have", bits.cardinality())
+					.num("inFlight", 0)
+					.num("total", total)
+					.num("peers", 0)
+					.byteArray("pieceStates", states)
+					.end());
 			return;
 		}
 		DownloadSession.Progress p = dl.progress();

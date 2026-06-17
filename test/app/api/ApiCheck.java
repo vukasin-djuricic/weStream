@@ -311,6 +311,23 @@ public class ApiCheck {
 			check("completed leecher reports seeding:true",
 					leecherTransfers.contains("\"seeding\":true"));
 
+			// --- /api/progress on the SEEDER returns a real piece-map snapshot, so the
+			// Player shows the true (full) strip instead of falling back to mock. The
+			// seeder has no active download, so this exercises the seedStore fallback.
+			String seedProgress = http("GET", seedPort, "/api/progress?infohash=" + infohash).body;
+			check("seeder progress is a seed snapshot (seeding:true + pieceStates)",
+					seedProgress.contains("\"seeding\":true") && seedProgress.contains("\"pieceStates\""));
+			check("seeder progress reports the whole file (have:3, total:3)",
+					seedProgress.contains("\"have\":3") && seedProgress.contains("\"total\":3"));
+
+			// --- throughput meter source: /api/status exposes cumulative PIECE byte
+			// counters, and they moved during the transfer above.
+			String seedStatus = http("GET", seedPort, "/api/status").body;
+			String leechStatus = http("GET", leechPort, "/api/status").body;
+			check("status exposes up/down byte counters",
+					seedStatus.contains("\"upBytes\":") && leechStatus.contains("\"downBytes\":"));
+			check("transfer moved bytes (downBytes > 0)", !leechStatus.contains("\"downBytes\":0"));
+
 			// --- /api/rpclog (live RPC activity — the nodes did bootstrap/find/store RPCs)
 			String rpc = http("GET", seedPort, "/api/rpclog").body;
 			check("rpclog returns events", rpc.contains("\"events\":["));

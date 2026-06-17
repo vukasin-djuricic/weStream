@@ -339,6 +339,16 @@ public final class TransferService implements Closeable {
 		return null;
 	}
 
+	/** Cumulative PIECE bytes this node has uploaded (for the throughput meter). */
+	public long uploadedBytes() {
+		return PeerConnection.uploadedBytes();
+	}
+
+	/** Cumulative PIECE bytes this node has downloaded (for the throughput meter). */
+	public long downloadedBytes() {
+		return PeerConnection.downloadedBytes();
+	}
+
 	/**
 	 * Snapshot of every file this node seeds (from {@code share}) or is downloading
 	 * (from {@code startDownload}) — the live Library list. Seeds report a full
