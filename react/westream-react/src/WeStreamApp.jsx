@@ -3,7 +3,7 @@ import {
   buildPieces, peers, buildSwarm, shares, downloads,
   buildBuckets, storedKeys, rpcLog,
 } from "./data";
-import { useStatus, useRouting, useProgress, useTransfers, useRpcLog, useDhtKeys, useThroughput, useWindowWidth, bucketsFromSizes, buildSwarmFrom, leecherCards, stripFromProgress, libraryFromTransfers, rpcLogFromEvents, storedKeysFrom, humanBytes, formatId, shortId, formatUptime } from "./hooks";
+import { useStatus, useRouting, useProgress, useTransfers, useRpcLog, useDhtKeys, useThroughput, useWindowWidth, bucketsFromSizes, buildSwarmFrom, leecherCards, stripFromProgress, windowStripFrom, libraryFromTransfers, rpcLogFromEvents, storedKeysFrom, humanBytes, formatId, shortId, formatUptime } from "./hooks";
 import { share as apiShare, startDownload as apiDownload, peekPeers as apiPeek, streamUrl } from "./api";
 
 /* ------------------------------------------------------------------
@@ -249,6 +249,14 @@ function PlayerScreen({ pieces, infohash, progress, swarm = [], peerCount = 0, t
   // Collapse the 322px swarm rail on a narrow window (3 nodes tiled on one
   // display) so the video keeps room; "View full swarm map" still reaches it.
   const showRail = useWindowWidth() >= 900;
+  // The REAL sliding window: the W pieces at the playhead (null on a complete
+  // seeder, where we fall back to the global piece map below).
+  const windowCells = progress ? windowStripFrom(progress) : null;
+  const windowed = windowCells != null;
+  // Once the file is whole, a wall of identical "have" cells says nothing — swap the
+  // piece grid for a verified/seeding summary (real upload rate + leecher count).
+  const complete = total > 0 && have >= total;
+  const leecherN = progress?.seeding ? (progress.peers || 0) : null;
   return (
     <section style={css("display:flex;min-height:100%")}>
       <div style={css("flex:1;min-width:0;padding:22px 24px;display:flex;flex-direction:column")}>
@@ -321,12 +329,36 @@ function PlayerScreen({ pieces, infohash, progress, swarm = [], peerCount = 0, t
           </div>
         </div>
 
-        {/* sliding window (SlidingWindowPicker) */}
+        {/* sliding window — when downloading this is the REAL [playhead, playhead+W)
+            slice (a seek relocates it; watch pieces go missing→in-flight→have). Once
+            complete the mosaic is uniform, so it becomes a verified/seeding summary. */}
+        {complete ? (
+          <div style={css("margin-top:16px;padding:16px 18px;background:linear-gradient(120deg,rgba(70,211,154,0.08),#15111d 70%);border:1px solid rgba(70,211,154,0.3);border-radius:14px;display:flex;align-items:center;gap:15px")}>
+            <span style={css("width:42px;height:42px;flex-shrink:0;border-radius:13px;display:flex;align-items:center;justify-content:center;background:rgba(70,211,154,0.13);border:1px solid rgba(70,211,154,0.4);box-shadow:0 0 18px rgba(70,211,154,0.25)")}>
+              <svg width="21" height="21" viewBox="0 0 24 24" fill="none" stroke="#74e3b0" strokeWidth="2.6" strokeLinecap="round" strokeLinejoin="round"><path d="M20 6L9 17l-5-5" /></svg>
+            </span>
+            <div style={css("flex:1;min-width:0")}>
+              <div style={css("font-size:13.5px;font-weight:800;color:#f4f1f8;margin-bottom:3px")}>Complete — fully downloaded</div>
+              <div style={css("font:600 11px 'JetBrains Mono';color:#74e3b0")}>{total} / {total} pieces verified · SHA-1</div>
+            </div>
+            <div style={css("text-align:right;flex-shrink:0")}>
+              <div style={css("font:700 15px 'JetBrains Mono';color:#ee7fb0")}>↑ {mbps(throughput?.up)}<span style={css("font-size:10px;color:#756c85;font-weight:600")}> MB/s</span></div>
+              <div style={css("display:flex;align-items:center;gap:6px;justify-content:flex-end;margin-top:4px;font:600 10px 'JetBrains Mono';color:#756c85")}>
+                <span style={css("width:7px;height:7px;border-radius:50%;background:#46d39a;box-shadow:0 0 7px rgba(70,211,154,0.6);animation:wsPulse 2s infinite")} />
+                {leecherN != null ? "seeding to " + leecherN + (leecherN === 1 ? " leecher" : " leechers") : "seeding to swarm"}
+              </div>
+            </div>
+          </div>
+        ) : (
         <div style={css("margin-top:16px;padding:14px 16px;background:#15111d;border:1px solid #221d2c;border-radius:14px")}>
           <div style={css("display:flex;align-items:center;justify-content:space-between;margin-bottom:11px")}>
             <div style={css("display:flex;align-items:center;gap:9px")}>
-              <span style={css("font-size:12.5px;font-weight:700")}>Sliding window</span>
-              <span style={css("font-family:'JetBrains Mono',monospace;font-size:10.5px;color:#756c85")}>SlidingWindowPicker · W=32</span>
+              <span style={css("font-size:12.5px;font-weight:700")}>{windowed ? "Sliding window" : "Piece map"}</span>
+              <span style={css("font-family:'JetBrains Mono',monospace;font-size:10.5px;color:#756c85")}>
+                {windowed
+                  ? "SlidingWindowPicker · W=" + progress.window + " · playhead @ " + progress.playhead
+                  : (progress?.seeding ? "seeding · full file" : "SlidingWindowPicker")}
+              </span>
             </div>
             <div style={css("display:flex;align-items:center;gap:14px;font-size:10.5px;color:#756c85")}>
               {[["have", "#c64ff0"], ["in-flight", "#6cc8e8"], ["missing", "#2a2435"]].map(([l, c]) => (
@@ -335,14 +367,19 @@ function PlayerScreen({ pieces, infohash, progress, swarm = [], peerCount = 0, t
             </div>
           </div>
           <div style={css("display:flex;gap:3px;align-items:flex-end")}>
-            {pieces.map((p) => (
-              <span key={p.idx} title={"piece " + p.idx} style={css("flex:1;height:26px;border-radius:3px;position:relative;background:" + p.color)} />
+            {(windowed ? windowCells : pieces).map((p) => (
+              <span key={p.idx} title={"piece " + p.idx}
+                style={css("flex:1;height:26px;border-radius:3px;position:relative;background:" + p.color
+                  + (p.head ? ";box-shadow:0 0 0 2px #f4bf4f,0 0 9px rgba(244,191,79,0.7)" : ""))} />
             ))}
           </div>
           <div style={css("display:flex;justify-content:space-between;margin-top:9px;font-family:'JetBrains Mono',monospace;font-size:10px;color:#5f5670")}>
-            <span>{have}/{total} have</span><span>requesting {inFlight}</span>
+            {windowed
+              ? <><span style={{ color: "#f4bf4f" }}>▸ playhead @ piece {progress.playhead}</span><span>requesting {inFlight} · {have}/{total} have</span></>
+              : <><span>{have}/{total} have</span><span>requesting {inFlight}</span></>}
           </div>
         </div>
+        )}
       </div>
 
       {/* live swarm rail — hidden on a narrow window to give the video room */}
@@ -385,10 +422,9 @@ function PlayerScreen({ pieces, infohash, progress, swarm = [], peerCount = 0, t
                 </div>
                 <div style={css("margin-top:4px;font:500 9.5px 'JetBrains Mono';color:" + (pr.havePct ? "#74e3b0" : "#5f5670"))}>{pr.havePct ? "has " + pr.havePct + " of file" : "XOR dist " + pr.dist}</div>
               </div>
-              <div style={css("text-align:right;flex-shrink:0")}>
-                <div style={css("font-family:'JetBrains Mono',monospace;font-size:11px;color:#6cc8e8")}>↓{pr.down}</div>
-                <div style={css("font-family:'JetBrains Mono',monospace;font-size:10px;color:#756c85;margin-top:2px")}>↑{pr.up}</div>
-              </div>
+              {/* per-peer transfer speed isn't metered yet; the meaningful per-peer datum
+                  (have% for leechers, XOR distance for DHT contacts) is on the line above. */}
+              <span style={css("flex-shrink:0;font:600 9px 'JetBrains Mono';color:#5f5670;background:rgba(21,17,29,0.6);border:1px solid #221d2c;padding:2px 7px;border-radius:5px")}>{pr.havePct ? "leech" : "DHT"}</span>
             </Hover>
           ))}
         </div>
@@ -450,7 +486,7 @@ function SwarmScreen({ swarm, peerCount = 24, youLabel = "4287ad37", throughput 
         {swarm.map((n) => (
           <div key={n.id} style={css("position:absolute;transform:translate(-50%,-50%);display:flex;flex-direction:column;align-items:center;gap:5px;z-index:2;left:" + n.left + ";top:" + n.top)}>
             <div style={css("border-radius:50%;background:#181320;display:flex;align-items:center;justify-content:center;font:700 11px 'JetBrains Mono';width:" + n.sizePx + ";height:" + n.sizePx + ";border:" + n.border + ";color:" + n.tint + ";box-shadow:" + n.shadow)}>{n.glyph}</div>
-            <span style={css("font:600 9px 'JetBrains Mono';color:#8b8299;background:rgba(21,17,29,0.85);padding:2px 6px;border-radius:5px;white-space:nowrap")}>↓{n.down}</span>
+            <span title={n.loc} style={css("font:600 9px 'JetBrains Mono';color:#8b8299;background:rgba(21,17,29,0.85);padding:2px 6px;border-radius:5px;white-space:nowrap")}>{n.id.slice(0, 6)}</span>
           </div>
         ))}
 
@@ -462,11 +498,11 @@ function SwarmScreen({ swarm, peerCount = 24, youLabel = "4287ad37", throughput 
 
       {/* table */}
       <div style={css("margin-top:18px;background:#15111d;border:1px solid #221d2c;border-radius:16px;overflow:hidden")}>
-        <div style={css("display:grid;grid-template-columns:1.6fr 1.2fr 0.8fr 1.4fr 0.8fr 0.8fr 0.8fr 1fr;gap:12px;padding:13px 18px;border-bottom:1px solid #221d2c;font:700 10.5px 'JetBrains Mono';color:#756c85;letter-spacing:0.06em")}>
-          <span>PEER</span><span>LOCATION</span><span>LATENCY</span><span>PIECES</span><span style={{ color: "#6cc8e8" }}>DOWN</span><span style={{ color: "#ee7fb0" }}>UP</span><span>CONN</span><span>XOR DIST</span>
+        <div style={css("display:grid;grid-template-columns:1.6fr 1.2fr 0.8fr 1.4fr 0.8fr 1fr;gap:12px;padding:13px 18px;border-bottom:1px solid #221d2c;font:700 10.5px 'JetBrains Mono';color:#756c85;letter-spacing:0.06em")}>
+          <span>PEER</span><span>LOCATION</span><span>LATENCY</span><span>PIECES</span><span>CONN</span><span>XOR DIST</span>
         </div>
         {swarm.map((n) => (
-          <Hover key={n.id} base="display:grid;grid-template-columns:1.6fr 1.2fr 0.8fr 1.4fr 0.8fr 0.8fr 0.8fr 1fr;gap:12px;padding:12px 18px;border-bottom:1px solid #1c1826;align-items:center" hover="background:#191421">
+          <Hover key={n.id} base="display:grid;grid-template-columns:1.6fr 1.2fr 0.8fr 1.4fr 0.8fr 1fr;gap:12px;padding:12px 18px;border-bottom:1px solid #1c1826;align-items:center" hover="background:#191421">
             <div style={css("display:flex;align-items:center;gap:10px;min-width:0")}>
               <span style={css("width:26px;height:26px;flex-shrink:0;border-radius:7px;display:flex;align-items:center;justify-content:center;font:700 10px 'JetBrains Mono';border:" + n.border + ";color:" + n.tint)}>{n.glyph}</span>
               <span style={css("font:600 12px 'JetBrains Mono';color:#e7e1ef")}>{n.id.length > 14 ? n.id.slice(0, 12) + "…" : n.id}</span>
@@ -474,8 +510,6 @@ function SwarmScreen({ swarm, peerCount = 24, youLabel = "4287ad37", throughput 
             <span style={css("font-size:12.5px;color:#b3aac0")}>{n.loc}</span>
             <span style={css("font:500 11.5px 'JetBrains Mono';color:#8b8299")}>{n.lat}</span>
             <span style={css("font:500 11.5px 'JetBrains Mono';color:#5f5670")} title="piece availability is only known for active transfer peers, not DHT contacts">{n.have}</span>
-            <span style={css("font:600 11.5px 'JetBrains Mono';color:#6cc8e8")}>{n.down}</span>
-            <span style={css("font:600 11.5px 'JetBrains Mono';color:#ee7fb0")}>{n.up}</span>
             <span style={css("font:500 11px 'JetBrains Mono';color:" + n.connColor)}>{n.conn}</span>
             <span style={css("font:500 11.5px 'JetBrains Mono';color:#756c85")}>{n.dist}</span>
           </Hover>
