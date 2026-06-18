@@ -629,7 +629,7 @@ function AddStreamScreen({ onStream, onDownloaded }) {
         const r = await apiPeek(ih);
         if (!alive) return;
         setPeek(r.found
-          ? { status: "found", peers: r.peers, totalLength: r.totalLength, pieceCount: r.pieceCount }
+          ? { status: "found", peers: r.peers, totalLength: r.totalLength, pieceCount: r.pieceCount, name: r.name }
           : { status: "none" });
       } catch {
         if (alive) setPeek({ status: "none" });
@@ -646,7 +646,7 @@ function AddStreamScreen({ onStream, onDownloaded }) {
     try {
       const r = await apiDownload(ih);
       // alreadyLocal: we seed this file, so the engine didn't start a download — just stream it.
-      setResolved({ infohash: ih, pieceSize: r.pieceSize, pieceCount: r.pieceCount, totalLength: r.totalLength, mine: r.alreadyLocal === true });
+      setResolved({ infohash: ih, pieceSize: r.pieceSize, pieceCount: r.pieceCount, totalLength: r.totalLength, mine: r.alreadyLocal === true, name: r.name });
       setMsg(r.alreadyLocal
         ? { text: "Already on this node — streaming from your seed.", ok: true }
         : { text: `Download started → ${r.out}`, ok: true });
@@ -669,7 +669,7 @@ function AddStreamScreen({ onStream, onDownloaded }) {
       setInfohash(r.infohash);
       // mine:true — this node now SEEDS the file, so the card offers Watch + Copy
       // infohash (to hand the token to a peer), never a pointless "download your own file".
-      setResolved({ infohash: r.infohash, pieceSize: r.pieceSize, pieceCount: r.pieceCount, totalLength: r.totalLength, mine: true });
+      setResolved({ infohash: r.infohash, pieceSize: r.pieceSize, pieceCount: r.pieceCount, totalLength: r.totalLength, mine: true, name: r.name });
       setMsg({ text: `Shared · ${r.infohash} (${r.pieceCount} pieces)`, ok: true });
     } catch (e) {
       setMsg({ text: "Share failed — is the path a readable file and the engine online?", ok: false });
@@ -734,6 +734,7 @@ function AddStreamScreen({ onStream, onDownloaded }) {
               </>)}
               {peek?.status === "found" && (<>
                 <span style={css("width:8px;height:8px;border-radius:50%;background:#74e3b0;box-shadow:0 0 8px rgba(70,211,154,0.6)")} />
+                {peek.name && <><span style={css("color:#e7e1ef;font-weight:700;max-width:240px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap")} title={peek.name}>{peek.name}</span><span style={css("color:#322b40")}>·</span></>}
                 <span style={css("color:#74e3b0")}>{peek.peers} {peek.peers === 1 ? "peer" : "peers"} in swarm</span>
                 <span style={css("color:#322b40")}>·</span>
                 <span style={css("color:#a99fbb")}>{humanBytes(peek.totalLength)}</span>
@@ -757,7 +758,12 @@ function AddStreamScreen({ onStream, onDownloaded }) {
               <div style={css("display:flex;align-items:center;gap:9px;margin-bottom:4px")}>
                 <span style={css("font:700 9.5px 'JetBrains Mono';color:#74e3b0;background:rgba(70,211,154,0.12);padding:2px 8px;border-radius:5px")}>{resolved.mine ? "SHARED · SEEDING" : "RESOLVED"}</span>
               </div>
-              <h2 style={css("margin:0 0 12px;font-size:16px;font-weight:800;letter-spacing:-0.01em;font-family:'JetBrains Mono',monospace;word-break:break-all")}>{shortId(resolved.infohash)}</h2>
+              {resolved.name
+                ? <>
+                    <h2 style={css("margin:0 0 3px;font-size:16px;font-weight:800;letter-spacing:-0.01em;word-break:break-word")}>{resolved.name}</h2>
+                    <div style={css("margin:0 0 12px;font:600 10.5px 'JetBrains Mono';color:#756c85;word-break:break-all")}>{shortId(resolved.infohash)}</div>
+                  </>
+                : <h2 style={css("margin:0 0 12px;font-size:16px;font-weight:800;letter-spacing:-0.01em;font-family:'JetBrains Mono',monospace;word-break:break-all")}>{shortId(resolved.infohash)}</h2>}
               <div style={css("display:grid;grid-template-columns:repeat(3,1fr);gap:10px 18px")}>
                 {[["PIECE SIZE", humanBytes(resolved.pieceSize)], ["PIECES", String(resolved.pieceCount)], ["TOTAL", humanBytes(resolved.totalLength)]].map(([l, v]) => (
                   <div key={l}><div style={css("font:600 9px 'JetBrains Mono';color:#6b5f80")}>{l}</div><div style={css("font:600 12.5px 'JetBrains Mono';color:#d8d0e4;margin-top:2px")}>{v}</div></div>
