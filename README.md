@@ -2,7 +2,7 @@
 
 # weStream
 
-**A from-scratch BitTorrent downloader + streaming player — a "Mini Stremio" built on a hand-written Kademlia DHT.**
+**A from-scratch peer-to-peer file downloader + streaming player on a hand-written Kademlia DHT.**
 
 ![Java](https://img.shields.io/badge/engine-pure%20JDK%2021-orange)
 ![Deps](https://img.shields.io/badge/core%20dependencies-zero-brightgreen)
@@ -98,7 +98,7 @@ Electron auto-spawns the Java engine per window. The API port for a node is `114
 | Path | What it is |
 |------|------------|
 | `src/core/kademlia/` | Kademlia DHT engine — IDs, routing, k-buckets, lookup, RPC (**pure JDK**) |
-| `src/core/transfer/` | BitTorrent-style transfer — pieces, bitfield, wire codec, pickers (**pure JDK**) |
+| `src/core/transfer/` | Peer-to-peer piece transfer — pieces, bitfield, wire codec, pickers (**pure JDK**) |
 | `src/app/api/` | Local HTTP API (`com.sun.net.httpserver`) — share/download/progress/`/stream` |
 | `react/westream-react/` | Electron + React UI |
 | `test/` | The `check.sh` regression suites |
@@ -107,4 +107,4 @@ The DHT and transfer engine stay pure JDK by design — XOR metric, k-buckets, i
 
 ## Status
 
-Engine, multi-peer (BEP 5) swarming, HTTP API, the Electron + React UI with watch-while-download streaming, and a **native Windows installer** (electron-builder + a bundled jlink JRE, published to GitHub Releases on a `v*` tag) are all done and verified by `./check.sh`. Deferred robustness items remain (download resume, choking/unchoking) and cross-machine peering (a real bootstrap address + NAT traversal).
+Engine, multi-peer swarming, HTTP API, the Electron + React UI with watch-while-download streaming, and a **native Windows installer** (electron-builder + a bundled jlink JRE, published to GitHub Releases on a `v*` tag) are all done and verified by `./check.sh`. Deferred robustness items remain (download resume, choking/unchoking) and cross-machine peering (a real bootstrap address + NAT traversal).
