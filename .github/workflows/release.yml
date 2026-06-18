@@ -41,5 +41,16 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           files: react/westream-react/release/weStream-Setup-*.exe
+          generate_release_notes: true
+          body: |
+            **weStream** — a from-scratch BitTorrent downloader + streaming player on a hand-written Kademlia DHT.
+
+            ### Install (Windows)
+            Download **`weStream-Setup-${{ github.ref_name }}.exe`** below and run it. No Java needed — a trimmed JRE is bundled. (Unsigned, so on Windows SmartScreen click *More info → Run anyway*.)
+
+            ### Try it
+            The app starts as a seed node. On **Add Stream**, pick a video to hash + share it, then watch it stream back on **Now Playing**. To see the P2P swarm on one machine, start a second peer with `WS_NODE_ID=1`.
+
+            > **Single machine for now** — the engine is loopback/LAN-first, so two *separate* computers won't discover each other yet (cross-machine bootstrap is deferred). Several peers on one machine swarm in real time.
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
