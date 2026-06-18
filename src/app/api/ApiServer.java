@@ -260,6 +260,7 @@ public final class ApiServer implements Closeable {
 		TorrentMetadata meta = transfer.share(path);
 		sendJson(ex, 200, new Json()
 				.str("infohash", meta.infohash().toString())
+				.str("name", nameOr(meta.infohash()))
 				.num("pieceSize", meta.pieceSize())
 				.num("totalLength", meta.totalLength())
 				.num("pieceCount", meta.pieceCount())
@@ -299,6 +300,7 @@ public final class ApiServer implements Closeable {
 		sendJson(ex, 200, new Json()
 				.bool("found", true)
 				.str("infohash", infohash.toString())
+				.str("name", peek.name() == null ? "" : peek.name())   // sharer's advisory file name
 				.num("peers", peek.peers())
 				.num("pieceSize", peek.pieceSize())
 				.num("totalLength", peek.totalLength())
@@ -335,6 +337,7 @@ public final class ApiServer implements Closeable {
 					.bool("started", true)
 					.bool("alreadyLocal", true)
 					.str("infohash", infohash.toString())
+					.str("name", nameOr(infohash))
 					.num("pieceSize", meta.pieceSize())
 					.num("totalLength", meta.totalLength())
 					.num("pieceCount", meta.pieceCount())
@@ -368,11 +371,18 @@ public final class ApiServer implements Closeable {
 		sendJson(ex, 200, new Json()
 				.bool("started", true)
 				.str("infohash", infohash.toString())
+				.str("name", nameOr(infohash))   // original sharer's name, resolved from the DHT
 				.str("out", out.toString())
 				.num("pieceSize", meta.pieceSize())
 				.num("totalLength", meta.totalLength())
 				.num("pieceCount", meta.pieceCount())
 				.end());
+	}
+
+	/** The display name for {@code infohash}, or "" — never null (keeps the JSON tidy). */
+	private String nameOr(NodeId infohash) {
+		String n = transfer.nameFor(infohash);
+		return n == null ? "" : n;
 	}
 
 	/**

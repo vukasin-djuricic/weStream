@@ -281,6 +281,12 @@ public class ApiCheck {
 							&& peek.body.contains("\"totalLength\":"));
 			check("peek reports a non-empty swarm (the seeder announced)",
 					!peek.body.contains("\"peers\":0"));
+			// The sharer's file name rides in the DHT metadata, so a leecher that only
+			// knows the infohash still resolves the human name (not just the hash).
+			String shareName = src.getFileName().toString();
+			check("share echoes the file name", share.body.contains("\"name\":\"" + shareName + "\""));
+			check("peek resolves the sharer's name from the DHT (not just the hash)",
+					peek.body.contains("\"name\":\"" + shareName + "\""));
 			Response peekMiss = http("GET", leechPort,
 					"/api/peers?infohash=" + "0".repeat(40));
 			check("peek of an unannounced infohash -> found:false",

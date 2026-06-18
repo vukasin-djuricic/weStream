@@ -192,11 +192,12 @@ public final class TransferService implements Closeable {
 		int port = server.getLocalPort();
 		myPorts.add(port);
 		Path name = file.getFileName();
-		sharedNames.put(meta.infohash(), name != null ? name.toString() : meta.infohash().toString());
+		String displayName = name != null ? name.toString() : meta.infohash().toString();
+		sharedNames.put(meta.infohash(), displayName);
 
-		// BEP 5 split: metadata under the infohash key (content-identical across
-		// sharers, so latest-wins is safe), our endpoint into the file's peer set.
-		dht.storeValue(meta.infohash(), encodeMetadata(meta));
+		// BEP 5 split: metadata (incl. the advisory display name) under the infohash
+		// key, our endpoint into the file's peer set.
+		dht.storeValue(meta.infohash(), encodeMetadata(meta, displayName));
 		dht.announcePeer(meta.infohash(), host, port);            // synchronous initial join
 		scheduleReannounce(meta.infohash(), port, REANNOUNCE_PERIOD_MS); // then refresh
 		return meta;
@@ -207,7 +208,7 @@ public final class TransferService implements Closeable {
 	 *  currently announced in the infohash's peer set (the DHT does not record who is
 	 *  a complete seeder vs a partial leecher — that split is only known once we
 	 *  connect and read each peer's bitfield during a transfer). */
-	public record Peek(long totalLength, int pieceCount, int pieceSize, int peers) {
+	public record Peek(long totalLength, int pieceCount, int pieceSize, int peers, String name) {
 	}
 
 	/**
@@ -224,9 +225,10 @@ public final class TransferService implements Closeable {
 		if (metaBytes == null) {
 			return null;
 		}
-		TorrentMetadata meta = decodeMetadata(metaBytes);
+		ResolvedMeta rm = decodeMetadata(metaBytes);
+		TorrentMetadata meta = rm.meta();
 		List<PeerStore.PeerEntry> swarm = dht.getPeers(infohash);
-		return new Peek(meta.totalLength(), meta.pieceCount(), meta.pieceSize(), swarm.size());
+		return new Peek(meta.totalLength(), meta.pieceCount(), meta.pieceSize(), swarm.size(), rm.name());
 	}
 
 	/**
@@ -239,7 +241,7 @@ public final class TransferService implements Closeable {
 		if (metaBytes == null) {
 			return false;
 		}
-		TorrentMetadata meta = decodeMetadata(metaBytes);
+		TorrentMetadata meta = decodeMetadata(metaBytes).meta();
 		List<PeerStore.PeerEntry> swarm = dht.getPeers(infohash);
 		if (swarm.isEmpty()) {
 			return false; // metadata known but no live seed
@@ -281,7 +283,8 @@ public final class TransferService implements Closeable {
 		if (metaBytes == null) {
 			return null;
 		}
-		TorrentMetadata meta = decodeMetadata(metaBytes);
+		ResolvedMeta rm = decodeMetadata(metaBytes);
+		TorrentMetadata meta = rm.meta();
 		List<PeerStore.PeerEntry> swarm = dht.getPeers(infohash);
 		if (swarm.isEmpty()) {
 			return null; // metadata known but no live seed
@@ -314,8 +317,12 @@ public final class TransferService implements Closeable {
 		servers.add(server);
 		seeds.add(seed);
 		active.put(infohash, dl);
+		// Prefer the original sharer's advisory name from the DHT (so the Library shows
+		// the film's name, not "<infohash>.bin"); fall back to the cache filename.
+		String dhtName = (rm.name() != null && !rm.name().isEmpty()) ? rm.name() : null;
 		Path name = out.getFileName();
-		downloadNames.put(infohash, name != null ? name.toString() : infohash.toString());
+		downloadNames.put(infohash, dhtName != null ? dhtName
+				: (name != null ? name.toString() : infohash.toString()));
 		return dl;
 	}
 
@@ -398,6 +405,13 @@ public final class TransferService implements Closeable {
 		return (seed == null) ? List.of() : seed.leechers();
 	}
 
+	/** The advisory display name for {@code infohash} (a share or an active download),
+	 *  or {@code null} if unknown — the original sharer's filename resolved from the DHT. */
+	public String nameFor(NodeId infohash) {
+		String shared = sharedNames.get(infohash);
+		return shared != null ? shared : downloadNames.get(infohash);
+	}
+
 	/** Cumulative PIECE bytes this node has uploaded (for the throughput meter). */
 	public long uploadedBytes() {
 		return PeerConnection.uploadedBytes();
@@ -442,14 +456,24 @@ public final class TransferService implements Closeable {
 
 	// ----------------------------------------------------------- metadata codec
 
+	/** Decoded DHT metadata value: the piece model + the advisory display name the
+	 *  original sharer announced (NOT part of the infohash, so it never affects
+	 *  identity/swarm membership — see {@link #encodeMetadata}). */
+	record ResolvedMeta(TorrentMetadata meta, String name) {
+	}
+
 	/**
 	 * Encode the torrent metadata (the DHT value under the {@code infohash} key).
-	 * Carries NO endpoint — peers live in the separate peer-set key — so the bytes
-	 * are content-identical across every sharer, making latest-wins overwrite safe.
+	 * Carries NO endpoint — peers live in the separate peer-set key. Leads with the
+	 * sharer's advisory {@code name} (the file's display name): it is NOT folded into
+	 * the infohash, so two sharers naming the same content differently still land in
+	 * the same swarm; the DHT key is latest-wins, so the most recent sharer's name
+	 * shows (BitTorrent treats the name the same advisory way).
 	 */
-	private static byte[] encodeMetadata(TorrentMetadata meta) {
+	private static byte[] encodeMetadata(TorrentMetadata meta, String name) {
 		ByteArrayOutputStream bytes = new ByteArrayOutputStream();
 		try (DataOutputStream out = new DataOutputStream(bytes)) {
+			out.writeUTF(name == null ? "" : name);
 			out.writeInt(meta.pieceSize());
 			out.writeLong(meta.totalLength());
 			out.writeInt(meta.pieceCount());
@@ -462,8 +486,9 @@ public final class TransferService implements Closeable {
 		return bytes.toByteArray();
 	}
 
-	private static TorrentMetadata decodeMetadata(byte[] data) throws IOException {
+	private static ResolvedMeta decodeMetadata(byte[] data) throws IOException {
 		try (DataInputStream in = new DataInputStream(new ByteArrayInputStream(data))) {
+			String name = in.readUTF();
 			int pieceSize = in.readInt();
 			long totalLength = in.readLong();
 			int pieceCount = in.readInt();
@@ -478,7 +503,7 @@ public final class TransferService implements Closeable {
 			}
 			// The TorrentMetadata constructor is the hostile-input gate (C1): it
 			// rejects an inconsistent pieceSize/totalLength/pieceCount.
-			return new TorrentMetadata(pieceSize, totalLength, hashes);
+			return new ResolvedMeta(new TorrentMetadata(pieceSize, totalLength, hashes), name);
 		}
 	}
 
