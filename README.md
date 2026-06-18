@@ -49,28 +49,24 @@ sequenceDiagram
 - **Download** → connect to all seeds in parallel, pull pieces with pipelined requests, verify each against its hash, then announce yourself as a partial seed.
 - **Stream** → `<video>` points at `/stream` (HTTP Range/206); seeking moves the sliding-window picker's playhead so pieces near the playhead are fetched first.
 
-## Quick start (Windows)
+## Quick start
 
-**Just want to try it?** Grab the installer from the **[latest release](../../releases/latest)**, run `weStream-Setup.exe`, and launch **weStream**. No Java needed — a trimmed JRE is bundled inside.
+**Just try it (Windows).** Download `weStream-Setup.exe` from the **[latest release](../../releases/latest)** and run it — no Java needed, a JRE is bundled. The app opens as a seed: on **Add Stream** pick a video to share, then watch it stream back on **Now Playing**.
 
-The app boots as a seed (node 0). On **Add Stream**, pick a video to hash + share it, then watch it stream back from **Now Playing**. To see the P2P swarm on a single machine, start a second peer:
+**See the P2P swarm.** Clone the repo, compile the engine once, then just double-click the launchers in `launchers/` — one window per peer:
 
-```bat
-:: from the install folder
-set WS_NODE_ID=1
-weStream.exe
+```powershell
+javac -d out/production/weStream (Get-ChildItem -Recurse src -Filter *.java).FullName
 ```
 
-> **Single machine for now.** The engine is LAN/loopback-first (every node on `127.0.0.1`), so two *separate computers* won't discover each other yet — cross-machine peering needs a real bootstrap address (deferred). On one machine you can run several peers and watch them swarm in real time.
+| Double-click | Peer |
+|---|---|
+| `launchers\run-node0-slow.cmd` | seed 0 — throttled so the sliding window is visible |
+| `launchers\run-node1.cmd` | a downloader (also `run-node2` / `run-node3`) |
 
-Building the installer yourself (needs `JAVA_HOME` set to a JDK 19+):
+Each launcher sets up Java, builds the UI on first run, and opens that node. Share a file on node 0, copy its infohash, paste it on node 1 → **Watch now**, and watch it stream from the swarm.
 
-```bat
-cd react\westream-react
-npm install
-npm run pack:win    :: unpacked app to test    -> release\win-unpacked\weStream.exe
-npm run dist:win    :: the installer            -> release\weStream-Setup-<ver>.exe
-```
+> **One machine for now** — every node is on `127.0.0.1`, so two *separate computers* won't find each other yet (cross-machine bootstrap is deferred). Several peers on one box swarm in real time.
 
 ## Build from source (dev)
 
