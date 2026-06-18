@@ -49,7 +49,30 @@ sequenceDiagram
 - **Download** → connect to all seeds in parallel, pull pieces with pipelined requests, verify each against its hash, then announce yourself as a partial seed.
 - **Stream** → `<video>` points at `/stream` (HTTP Range/206); seeking moves the sliding-window picker's playhead so pieces near the playhead are fetched first.
 
-## Getting started
+## Quick start (Windows)
+
+**Just want to try it?** Grab the installer from the **[latest release](../../releases/latest)**, run `weStream-Setup.exe`, and launch **weStream**. No Java needed — a trimmed JRE is bundled inside.
+
+The app boots as a seed (node 0). On **Add Stream**, pick a video to hash + share it, then watch it stream back from **Now Playing**. To see the P2P swarm on a single machine, start a second peer:
+
+```bat
+:: from the install folder
+set WS_NODE_ID=1
+weStream.exe
+```
+
+> **Single machine for now.** The engine is LAN/loopback-first (every node on `127.0.0.1`), so two *separate computers* won't discover each other yet — cross-machine peering needs a real bootstrap address (deferred). On one machine you can run several peers and watch them swarm in real time.
+
+Building the installer yourself (needs `JAVA_HOME` set to a JDK 19+):
+
+```bat
+cd react\westream-react
+npm install
+npm run pack:win    :: unpacked app to test    -> release\win-unpacked\weStream.exe
+npm run dist:win    :: the installer            -> release\weStream-Setup-<ver>.exe
+```
+
+## Build from source (dev)
 
 **Prerequisites:** JDK 21+ and Node.js + npm.
 
@@ -88,4 +111,4 @@ The DHT and transfer engine stay pure JDK by design — XOR metric, k-buckets, i
 
 ## Status
 
-Engine, multi-peer (BEP 5) swarming, HTTP API, and the Electron + React UI with watch-while-download streaming are all done and verified by `./check.sh`. Remaining: native packaging (electron-builder / jpackage) and deferred robustness items (download resume, choking/unchoking).
+Engine, multi-peer (BEP 5) swarming, HTTP API, the Electron + React UI with watch-while-download streaming, and a **native Windows installer** (electron-builder + a bundled jlink JRE, published to GitHub Releases on a `v*` tag) are all done and verified by `./check.sh`. Deferred robustness items remain (download resume, choking/unchoking) and cross-machine peering (a real bootstrap address + NAT traversal).
