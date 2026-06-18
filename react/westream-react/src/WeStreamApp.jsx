@@ -611,6 +611,7 @@ function AddStreamScreen({ onStream, onDownloaded }) {
   const [busy, setBusy] = useState(false);
   const [resolved, setResolved] = useState(null); // real metadata from a resolve/share, or null
   const [peek, setPeek] = useState(null); // null | {status:'looking'|'found'|'none', peers, totalLength, pieceCount}
+  const [copied, setCopied] = useState(false); // "Copy infohash" feedback
   const HEX40 = /^[0-9a-fA-F]{40}$/;
   const inputStyle = css("flex:1;min-width:0;background:transparent;border:none;outline:none;font:500 13px 'JetBrains Mono';color:#e7e1ef");
 
@@ -644,8 +645,11 @@ function AddStreamScreen({ onStream, onDownloaded }) {
     setBusy(true);
     try {
       const r = await apiDownload(ih);
-      setResolved({ infohash: ih, pieceSize: r.pieceSize, pieceCount: r.pieceCount, totalLength: r.totalLength });
-      setMsg({ text: `Download started → ${r.out}`, ok: true });
+      // alreadyLocal: we seed this file, so the engine didn't start a download — just stream it.
+      setResolved({ infohash: ih, pieceSize: r.pieceSize, pieceCount: r.pieceCount, totalLength: r.totalLength, mine: r.alreadyLocal === true });
+      setMsg(r.alreadyLocal
+        ? { text: "Already on this node — streaming from your seed.", ok: true }
+        : { text: `Download started → ${r.out}`, ok: true });
       onDownloaded && onDownloaded(ih);
       if (thenStream) onStream && onStream(ih);
     } catch (e) {
@@ -663,11 +667,23 @@ function AddStreamScreen({ onStream, onDownloaded }) {
     try {
       const r = await apiShare(p);
       setInfohash(r.infohash);
-      setResolved({ infohash: r.infohash, pieceSize: r.pieceSize, pieceCount: r.pieceCount, totalLength: r.totalLength });
+      // mine:true — this node now SEEDS the file, so the card offers Watch + Copy
+      // infohash (to hand the token to a peer), never a pointless "download your own file".
+      setResolved({ infohash: r.infohash, pieceSize: r.pieceSize, pieceCount: r.pieceCount, totalLength: r.totalLength, mine: true });
       setMsg({ text: `Shared · ${r.infohash} (${r.pieceCount} pieces)`, ok: true });
     } catch (e) {
       setMsg({ text: "Share failed — is the path a readable file and the engine online?", ok: false });
     } finally { setBusy(false); }
+  };
+
+  // Watch a file this node already seeds: just open the player (it streams from the
+  // local seed store) — no redundant download of our own file.
+  const watchMine = () => resolved && onStream && onStream(resolved.infohash);
+  const copyInfohash = () => {
+    if (!resolved) return;
+    navigator.clipboard?.writeText(resolved.infohash);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 1500);
   };
 
   return (
@@ -689,9 +705,18 @@ function AddStreamScreen({ onStream, onDownloaded }) {
               <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#c64ff0" strokeWidth="2"><circle cx="12" cy="12" r="3" /><path d="M12 2v4M12 18v4M2 12h4M18 12h4" /></svg>
               <input value={infohash} onChange={(e) => setInfohash(e.target.value)} placeholder="paste a 40-hex infohash" style={inputStyle} />
             </div>
-            <Hover as="button" onClick={() => doDownload(false)} disabled={busy || peek?.status === "none"} base={"display:flex;align-items:center;gap:8px;padding:0 20px;border:none;border-radius:12px;color:#fff;font:700 13px 'Manrope';white-space:nowrap;" + (busy || peek?.status === "none" ? "background:#2c2638;color:#6b6379;cursor:not-allowed" : "background:linear-gradient(135deg,#c64ff0,#9b3ec9);cursor:pointer")} hover={busy || peek?.status === "none" ? "" : "filter:brightness(1.1)"}>
-              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 3v12M7 11l5 4 5-4M5 20h14" /></svg>
-              {busy ? "Starting…" : "Download"}
+            <Hover as="button" onClick={() => doDownload(true)} disabled={busy || peek?.status === "none"} base={"display:flex;align-items:center;gap:8px;padding:0 20px;border:none;border-radius:12px;color:#fff;font:700 13px 'Manrope';white-space:nowrap;" + (busy || peek?.status === "none" ? "background:#2c2638;color:#6b6379;cursor:not-allowed" : "background:linear-gradient(135deg,#c64ff0,#9b3ec9);cursor:pointer")} hover={busy || peek?.status === "none" ? "" : "filter:brightness(1.1)"}>
+              <svg width="15" height="15" viewBox="0 0 24 24"><path d="M8 5.5l11 6.5-11 6.5z" fill="currentColor" /></svg>
+              {busy ? "Starting…" : "Watch now"}
+            </Hover>
+          </div>
+          {/* secondary: fetch in the background without opening the player */}
+          <div style={css("display:flex;justify-content:flex-end;margin-top:8px")}>
+            <Hover as="button" onClick={() => doDownload(false)} disabled={busy || peek?.status === "none"}
+              base={"display:flex;align-items:center;gap:6px;background:none;border:none;font:600 11px 'JetBrains Mono';padding:2px 4px;" + (busy || peek?.status === "none" ? "color:#3f3a4b;cursor:not-allowed" : "color:#8b8299;cursor:pointer")}
+              hover={busy || peek?.status === "none" ? "" : "color:#c7bfd6"}>
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 3v12M7 11l5 4 5-4M5 20h14" /></svg>
+              or download only
             </Hover>
           </div>
           {/* live DHT peek — real swarm size, resolved without downloading (replaces the old static FIND_VALUE diagram) */}
@@ -730,7 +755,7 @@ function AddStreamScreen({ onStream, onDownloaded }) {
             </div>
             <div style={css("flex:1;min-width:0")}>
               <div style={css("display:flex;align-items:center;gap:9px;margin-bottom:4px")}>
-                <span style={css("font:700 9.5px 'JetBrains Mono';color:#74e3b0;background:rgba(70,211,154,0.12);padding:2px 8px;border-radius:5px")}>RESOLVED</span>
+                <span style={css("font:700 9.5px 'JetBrains Mono';color:#74e3b0;background:rgba(70,211,154,0.12);padding:2px 8px;border-radius:5px")}>{resolved.mine ? "SHARED · SEEDING" : "RESOLVED"}</span>
               </div>
               <h2 style={css("margin:0 0 12px;font-size:16px;font-weight:800;letter-spacing:-0.01em;font-family:'JetBrains Mono',monospace;word-break:break-all")}>{shortId(resolved.infohash)}</h2>
               <div style={css("display:grid;grid-template-columns:repeat(3,1fr);gap:10px 18px")}>
@@ -741,12 +766,31 @@ function AddStreamScreen({ onStream, onDownloaded }) {
             </div>
           </div>
           <div style={css("display:flex;gap:11px;margin-top:18px")}>
-            <Hover as="button" onClick={() => doDownload(true)} base="flex:1;display:flex;align-items:center;justify-content:center;gap:9px;padding:13px;background:linear-gradient(135deg,#c64ff0,#9b3ec9);border:none;border-radius:12px;color:#fff;font:700 13.5px 'Manrope';cursor:pointer" hover="filter:brightness(1.1)">
-              <svg width="16" height="16" viewBox="0 0 24 24"><path d="M8 5.5l11 6.5-11 6.5z" fill="#fff" /></svg> Stream now
-            </Hover>
-            <Hover as="button" onClick={() => doDownload(false)} base="display:flex;align-items:center;justify-content:center;gap:9px;padding:13px 22px;background:#1a1623;border:1px solid #2c2638;border-radius:12px;color:#c7bfd6;font:700 13.5px 'Manrope';cursor:pointer" hover="background:#221d2c">
-              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 3v12M7 11l5 4 5-4M5 20h14" /></svg> Download
-            </Hover>
+            {resolved.mine ? (
+              // We already seed this file — Watch opens the player (no redundant download);
+              // Copy hands the infohash token to a peer. No "download your own file".
+              <>
+                <Hover as="button" onClick={watchMine} base="flex:1;display:flex;align-items:center;justify-content:center;gap:9px;padding:13px;background:linear-gradient(135deg,#c64ff0,#9b3ec9);border:none;border-radius:12px;color:#fff;font:700 13.5px 'Manrope';cursor:pointer" hover="filter:brightness(1.1)">
+                  <svg width="16" height="16" viewBox="0 0 24 24"><path d="M8 5.5l11 6.5-11 6.5z" fill="#fff" /></svg> Watch
+                </Hover>
+                <Hover as="button" onClick={copyInfohash} base={"display:flex;align-items:center;justify-content:center;gap:9px;padding:13px 22px;border-radius:12px;font:700 13.5px 'Manrope';cursor:pointer;" + (copied ? "background:rgba(70,211,154,0.12);border:1px solid rgba(70,211,154,0.35);color:#74e3b0" : "background:#1a1623;border:1px solid #2c2638;color:#c7bfd6")} hover={copied ? "" : "background:#221d2c"}>
+                  {copied
+                    ? <><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round"><path d="M20 6L9 17l-5-5" /></svg> Copied</>
+                    : <><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="9" y="9" width="11" height="11" rx="2" /><path d="M5 15V5a2 2 0 0 1 2-2h10" /></svg> Copy infohash</>}
+                </Hover>
+              </>
+            ) : (
+              // Someone else's file — Watch now fetches + opens the player; Download only
+              // fetches in the background (shows up in the Library).
+              <>
+                <Hover as="button" onClick={() => doDownload(true)} base="flex:1;display:flex;align-items:center;justify-content:center;gap:9px;padding:13px;background:linear-gradient(135deg,#c64ff0,#9b3ec9);border:none;border-radius:12px;color:#fff;font:700 13.5px 'Manrope';cursor:pointer" hover="filter:brightness(1.1)">
+                  <svg width="16" height="16" viewBox="0 0 24 24"><path d="M8 5.5l11 6.5-11 6.5z" fill="#fff" /></svg> Watch now
+                </Hover>
+                <Hover as="button" onClick={() => doDownload(false)} base="display:flex;align-items:center;justify-content:center;gap:9px;padding:13px 22px;background:#1a1623;border:1px solid #2c2638;border-radius:12px;color:#c7bfd6;font:700 13.5px 'Manrope';cursor:pointer" hover="background:#221d2c">
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 3v12M7 11l5 4 5-4M5 20h14" /></svg> Download only
+                </Hover>
+              </>
+            )}
           </div>
         </div>
         )}

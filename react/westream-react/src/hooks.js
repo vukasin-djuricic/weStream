@@ -232,6 +232,27 @@ export function stripFromProgress(progress, maxBars = 96) {
   return bars;
 }
 
+/**
+ * The TRUE sliding window: the W pieces at [playhead, playhead+W), each as its own
+ * cell (no downsampling — W is small), so a seek visibly relocates the window and
+ * you watch those pieces go missing → in-flight → have. Returns null when the
+ * download isn't sliding-window (e.g. a complete seeder has no playhead), so the
+ * caller can fall back to the global map.
+ */
+export function windowStripFrom(progress) {
+  const states = progress.pieceStates || [];
+  const total = states.length;
+  const ph = progress.playhead;
+  const w = progress.window || 0;
+  if (ph == null || ph < 0 || w <= 0 || total === 0) return null;
+  const end = Math.min(total, ph + w);
+  const cells = [];
+  for (let i = ph; i < end; i++) {
+    cells.push({ idx: i, color: PIECE_COLORS[states[i]], head: i === ph });
+  }
+  return cells;
+}
+
 /** /api/routing contacts → the swarm-node shape SwarmScreen renders (polar layout + cosmetics). */
 export function buildSwarmFrom(contacts) {
   const n = Math.max(1, contacts.length);
