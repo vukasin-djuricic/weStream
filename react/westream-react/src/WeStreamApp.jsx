@@ -160,10 +160,16 @@ export default function WeStreamApp() {
         </div>
 
         {!isMac && (
-          <div style={css("display:flex;gap:16px;color:#756c85;font-size:16px;padding-right:4px;-webkit-app-region:no-drag")}>
-            <span onClick={() => window.ws?.minimize()} style={{ cursor: "pointer" }}>—</span>
-            <span onClick={() => window.ws?.maximize()} style={{ cursor: "pointer" }}>⤢</span>
-            <span onClick={() => window.ws?.close()} style={{ cursor: "pointer" }}>⨯</span>
+          <div style={css("display:flex;gap:3px;margin-left:10px;-webkit-app-region:no-drag")}>
+            <Hover onClick={() => window.ws?.minimize()} title="Minimize"
+              base="display:flex;align-items:center;justify-content:center;width:34px;height:28px;border-radius:7px;color:#8b8299;font-size:15px;cursor:pointer;transition:background .12s,color .12s"
+              hover="background:#241f2e;color:#e7e1ef">—</Hover>
+            <Hover onClick={() => window.ws?.maximize()} title="Maximize"
+              base="display:flex;align-items:center;justify-content:center;width:34px;height:28px;border-radius:7px;color:#8b8299;font-size:13px;cursor:pointer;transition:background .12s,color .12s"
+              hover="background:#241f2e;color:#e7e1ef">⤢</Hover>
+            <Hover onClick={() => window.ws?.close()} title="Close"
+              base="display:flex;align-items:center;justify-content:center;width:34px;height:28px;border-radius:7px;color:#8b8299;font-size:16px;cursor:pointer;transition:background .12s,color .12s"
+              hover="background:#e3463c;color:#fff">⨯</Hover>
           </div>
         )}
       </header>
