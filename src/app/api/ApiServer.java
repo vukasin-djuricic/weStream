@@ -324,6 +324,23 @@ public final class ApiServer implements Closeable {
 			sendJson(ex, 400, "{\"error\":\"missing or malformed infohash\"}");
 			return;
 		}
+		// Already seeding this file? There's nothing to download — the stream endpoint
+		// serves it straight from the local seed store. Short-circuit so "Watch now" on
+		// your own share doesn't kick off a pointless self-download (and 404 when you're
+		// the only seeder, because connectToSwarm skips self).
+		PieceStore seeded = transfer.seedStore(infohash);
+		if (seeded != null) {
+			TorrentMetadata meta = seeded.metadata();
+			sendJson(ex, 200, new Json()
+					.bool("started", true)
+					.bool("alreadyLocal", true)
+					.str("infohash", infohash.toString())
+					.num("pieceSize", meta.pieceSize())
+					.num("totalLength", meta.totalLength())
+					.num("pieceCount", meta.pieceCount())
+					.end());
+			return;
+		}
 		// Default: the node's ephemeral cache (wiped on shutdown). Created lazily by startDownload.
 		// A caller-supplied out is CONFINED to the cache dir — otherwise a loopback request
 		// could write attacker-chosen content to an arbitrary path (Security M1).
@@ -426,6 +443,8 @@ public final class ApiServer implements Closeable {
 				.num("peers", p.peers())
 				.num("seeders", p.seeders())
 				.num("leechers", p.leechers())
+				.num("playhead", dl.playhead())   // streaming window anchor (a seek moves it)
+				.num("window", dl.streamWindow())
 				.byteArray("pieceStates", p.pieceStates())
 				.end());
 	}

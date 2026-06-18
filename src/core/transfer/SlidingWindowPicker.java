@@ -37,6 +37,11 @@ public final class SlidingWindowPicker implements PiecePicker {
 		return playhead.get();
 	}
 
+	/** The window length W: how many pieces ahead of the playhead get high priority. */
+	public int windowSize() {
+		return windowSize;
+	}
+
 	@Override
 	public int pick(Bitfield have, Bitfield available, Set<Integer> inFlight) {
 		int start = playhead.get();

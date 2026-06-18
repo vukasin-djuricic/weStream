@@ -282,6 +282,16 @@ public final class DownloadSession implements PeerConnection.Listener, Closeable
 		return deliveredBy.size();
 	}
 
+	/** Current streaming playhead (piece index), or -1 if this download isn't sliding-window. */
+	public int playhead() {
+		return (picker instanceof SlidingWindowPicker sw) ? sw.playhead() : -1;
+	}
+
+	/** Streaming window length in pieces, or 0 if this download isn't sliding-window. */
+	public int streamWindow() {
+		return (picker instanceof SlidingWindowPicker sw) ? sw.windowSize() : 0;
+	}
+
 	@Override
 	public void close() throws IOException {
 		for (PeerConnection c : peers) {

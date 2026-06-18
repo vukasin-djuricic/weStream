@@ -454,6 +454,14 @@ public class ApiCheck {
 			check("stream advertises Accept-Ranges", "bytes".equals(full.acceptRanges));
 			check("stream full body byte-identical", Arrays.equals(full.body, content));
 
+			// A node that already SEEDS this file must not kick off a pointless self-download
+			// when asked to download it (the "Watch now on your own share" case) — it returns
+			// alreadyLocal:true and the stream endpoint serves it from the seed store.
+			Response selfDl = http("POST", seedPort, "/api/download",
+					new Json().str("infohash", ih).end());
+			check("download of an already-seeded file -> 200 alreadyLocal (no self-download)",
+					selfDl.code == 200 && selfDl.body.contains("\"alreadyLocal\":true"));
+
 			// --- seed side: a range that spans several pieces -> 206 + exact slice
 			StreamResponse part = httpStream(seedPort, "/stream/" + ih, "bytes=400-1200");
 			check("stream range -> 206", part.code == 206);
@@ -480,6 +488,14 @@ public class ApiCheck {
 			StreamResponse watched = httpStream(leechPort, "/stream/" + ih, null);
 			check("watch-while-download -> 200", watched.code == 200);
 			check("watch-while-download body byte-identical", Arrays.equals(watched.body, content));
+
+			// --- a Range seek moves the streaming playhead: the sliding-window anchor the
+			// UI strip follows. Seek to byte 2048 = piece 4 (2048/512), then progress must
+			// report playhead:4 (regression for the strip being a static global map).
+			httpStream(leechPort, "/stream/" + ih, "bytes=2048-2200");
+			String seekProg = http("GET", leechPort, "/api/progress?infohash=" + ih).body;
+			check("a Range seek moves the playhead (sliding window follows it)",
+					seekProg.contains("\"playhead\":4") && seekProg.contains("\"window\":"));
 		} finally {
 			if (seederApi != null) {
 				seederApi.close();
