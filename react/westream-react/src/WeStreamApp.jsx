@@ -46,6 +46,11 @@ const KEYFRAMES = `
 @keyframes wsGlow { 0%,100% { box-shadow: 0 0 0 0 rgba(198,79,240,0.45), 0 0 22px 2px rgba(198,79,240,0.25); } 50% { box-shadow: 0 0 0 6px rgba(198,79,240,0.0), 0 0 30px 6px rgba(198,79,240,0.4); } }
 @keyframes wsFlow { to { stroke-dashoffset: -28; } }
 @keyframes wsOrbit { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
+/* Card hover via CSS (not JS state) — the peer/library lists re-render on a 500ms
+   poll, which can drop a JS onMouseLeave and leave a card stuck "hovered". CSS :hover
+   is browser-managed and never sticks. */
+.ws-card { transition: border-color .15s, box-shadow .15s; }
+.ws-card:hover { border-color: rgba(198,79,240,0.55); box-shadow: 0 0 0 1px rgba(198,79,240,0.18), 0 0 16px rgba(198,79,240,0.13); }
 .ws-scroll::-webkit-scrollbar { width: 10px; height: 10px; }
 .ws-scroll::-webkit-scrollbar-thumb { background: #322b40; border-radius: 8px; border: 2px solid transparent; background-clip: padding-box; }
 /* Reserve the scrollbar gutter always, so a vertical scrollbar appearing never
@@ -419,7 +424,7 @@ function PlayerScreen({ pieces, infohash, progress, swarm = [], peerCount = 0, t
             <div style={css("padding:16px;text-align:center;font:500 11.5px 'JetBrains Mono';color:#5f5670;background:#15111d;border:1px solid #221d2c;border-radius:12px")}>no peers connected yet</div>
           )}
           {swarm.map((pr) => (
-            <Hover key={pr.id} base="display:flex;align-items:center;gap:11px;padding:10px 11px;background:#15111d;border:1px solid #221d2c;border-radius:12px" hover="border-color:#3a3148">
+            <div key={pr.id} className="ws-card" style={css("display:flex;align-items:center;gap:11px;padding:10px 11px;background:#15111d;border:1px solid #221d2c;border-radius:12px")}>
               <span style={css("width:30px;height:30px;flex-shrink:0;border-radius:9px;display:flex;align-items:center;justify-content:center;font:700 11px 'JetBrains Mono';color:#0f0d15;background:" + pr.tint)}>{pr.glyph}</span>
               <div style={css("flex:1;min-width:0")}>
                 <div style={css("display:flex;align-items:center;gap:7px")}>
@@ -431,7 +436,7 @@ function PlayerScreen({ pieces, infohash, progress, swarm = [], peerCount = 0, t
               {/* per-peer transfer speed isn't metered yet; the meaningful per-peer datum
                   (have% for leechers, XOR distance for DHT contacts) is on the line above. */}
               <span style={css("flex-shrink:0;font:600 9px 'JetBrains Mono';color:#5f5670;background:rgba(21,17,29,0.6);border:1px solid #221d2c;padding:2px 7px;border-radius:5px")}>{pr.havePct ? "leech" : "DHT"}</span>
-            </Hover>
+            </div>
           ))}
         </div>
         <Hover as="button" onClick={onSwarm} base="margin-top:auto;padding:11px;background:#1a1623;border:1px solid #271f33;border-radius:11px;color:#c7bfd6;font:600 12.5px 'Manrope';cursor:pointer" hover="background:#221d2c">View full swarm map →</Hover>
@@ -528,7 +533,7 @@ function SwarmScreen({ swarm, peerCount = 24, youLabel = "4287ad37", throughput 
 /* ===================== LIBRARY ===================== */
 function MediaCard({ it, onPlay }) {
   return (
-    <Hover onClick={() => it.infohash && onPlay && onPlay(it.infohash)} base="background:#15111d;border:1px solid #221d2c;border-radius:14px;overflow:hidden;cursor:pointer" hover="border-color:#3a3148">
+    <div className="ws-card" onClick={() => it.infohash && onPlay && onPlay(it.infohash)} style={css("background:#15111d;border:1px solid #221d2c;border-radius:14px;overflow:hidden;cursor:pointer")}>
       <div style={css("position:relative;aspect-ratio:16/10;display:flex;align-items:center;justify-content:center;background:" + it.posterBg)}>
         <span style={css("font:600 9.5px 'JetBrains Mono';color:#5f5670")}>poster</span>
         <span style={css("position:absolute;top:9px;left:9px;font:700 9px 'JetBrains Mono';color:#cfc6dd;background:rgba(15,13,21,0.72);padding:2px 7px;border-radius:5px")}>{it.res}</span>
@@ -541,7 +546,7 @@ function MediaCard({ it, onPlay }) {
           <span>{it.size}</span><span style={{ color: "#c08fe8" }}>{it.peersLabel}</span>
         </div>
       </div>
-    </Hover>
+    </div>
   );
 }
 
