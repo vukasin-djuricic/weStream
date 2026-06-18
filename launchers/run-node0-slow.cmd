@@ -1,4 +1,4 @@
 @echo off
-REM Node 0 as a THROTTLED seed (1500 KB/s ~ 1.5 MB/s) so the sliding-window
-REM behaviour is visible. Lower the number for an even slower, clearer demo.
+REM Node 0 as a THROTTLED seed (3500 KB/s) so the sliding-window behaviour is
+REM visible. Lower the number for an even slower, clearer demo.
 call "%~dp0_launch-node.cmd" 0 3500
