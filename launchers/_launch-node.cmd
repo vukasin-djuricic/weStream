@@ -31,7 +31,7 @@ if defined WS_THROTTLE_KBPS (
 )
 echo(
 
-if not exist "%~dp0out\production\weStream\app\ServentMain.class" (
+if not exist "%~dp0..\out\production\weStream\app\ServentMain.class" (
   echo [ERROR] engine not compiled. Run this once from the project root:
   echo   javac -d out\production\weStream ^(Get-ChildItem -Recurse src -Filter *.java^).FullName
   echo(
@@ -39,7 +39,7 @@ if not exist "%~dp0out\production\weStream\app\ServentMain.class" (
   exit /b 1
 )
 
-cd /d "%~dp0react\westream-react"
+cd /d "%~dp0..\react\westream-react"
 
 REM Build the UI bundle on first run (or after you change the React code).
 if not exist "dist\index.html" (
