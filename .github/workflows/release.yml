@@ -1,0 +1,45 @@
+name: release
+
+# Build the Windows installer and attach it to a GitHub Release whenever a
+# version tag (e.g. v0.1.0) is pushed. The jlinked JRE + electron-builder are
+# platform-native, so this runs on a Windows runner.
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write # create the release + upload the installer
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: react/westream-react
+    steps:
+      - uses: actions/checkout@v4
+
+      # JDK 21 (LTS) — runs the engine's JDK-19 bytecode fine; JAVA_HOME drives
+      # the jar + jlink in electron/build-engine.cjs.
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      # npm install (not ci): package.json gained electron-builder after the
+      # committed lockfile, so let npm reconcile it.
+      - run: npm install
+
+      # engine:build (javac -> jar -> jlink) + vite build + electron-builder --win.
+      - run: npm run dist:win
+
+      - name: Attach installer to the GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: react/westream-react/release/weStream-Setup-*.exe
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

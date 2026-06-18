@@ -1,16 +1,22 @@
 {
   "name": "westream-react",
   "private": true,
-  "version": "0.0.0",
+  "version": "0.1.0",
   "type": "module",
   "main": "electron/main.cjs",
+  "description": "weStream — a Kademlia + BitTorrent desktop client (engine over a local HTTP API).",
+  "author": "weStream",
   "scripts": {
     "dev": "vite",
     "build": "vite build",
     "preview": "vite preview",
     "app": "vite build && electron electron/main.cjs",
     "app:dev": "concurrently -k \"vite\" \"wait-on tcp:5173 && ELECTRON_START_URL=http://localhost:5173 electron electron/main.cjs\"",
-    "app:start": "electron electron/main.cjs"
+    "app:start": "electron electron/main.cjs",
+    "engine:build": "node electron/build-engine.cjs",
+    "pack:win": "npm run engine:build && npm run build && electron-builder --win --dir",
+    "dist:win": "npm run engine:build && npm run build && electron-builder --win --publish never",
+    "dist:win:publish": "npm run engine:build && npm run build && electron-builder --win --publish always"
   },
   "dependencies": {
     "react": "^18.3.1",
@@ -20,7 +26,41 @@
     "@vitejs/plugin-react": "^4.3.4",
     "concurrently": "^9.1.0",
     "electron": "^33.2.1",
+    "electron-builder": "^25.1.8",
     "vite": "^5.4.11",
     "wait-on": "^8.0.1"
+  },
+  "build": {
+    "appId": "rs.raf.westream",
+    "productName": "weStream",
+    "directories": {
+      "output": "release",
+      "buildResources": "buildResources"
+    },
+    "files": [
+      "dist/**/*",
+      "electron/**/*"
+    ],
+    "extraResources": [
+      {
+        "from": "build/runtime",
+        "to": "runtime"
+      },
+      {
+        "from": "build/engine",
+        "to": "engine"
+      }
+    ],
+    "win": {
+      "target": [
+        "nsis"
+      ],
+      "artifactName": "weStream-Setup-${version}.${ext}"
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true
+    }
   }
 }

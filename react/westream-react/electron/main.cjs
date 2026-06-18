@@ -24,10 +24,25 @@ ipcMain.handle("dialog:pickFile", async () => {
   return r.canceled || r.filePaths.length === 0 ? null : r.filePaths[0];
 });
 
-// The repo root holds the compiled engine + the Kademlia config (electron/ is 3 deep).
-const REPO_ROOT = path.resolve(__dirname, "..", "..", "..");
-const CLASSPATH = path.join(REPO_ROOT, "out", "production", "weStream");
-const CONFIG = path.join(REPO_ROOT, "kademlia", "servent_list.properties");
+// Where the engine + config live and which java to spawn, in the two modes:
+//  - dev (run from the repo): the plain-javac classes + `java` on PATH.
+//  - packaged: the bundled jar + a jlinked JRE shipped as extraResources
+//    (see electron/build-engine.cjs + package.json "build").
+const PACKAGED = app.isPackaged;
+const REPO_ROOT = path.resolve(__dirname, "..", "..", ".."); // electron/ is 3 deep (dev only)
+const ENGINE = PACKAGED
+  ? {
+      java: path.join(process.resourcesPath, "runtime", "bin",
+        process.platform === "win32" ? "java.exe" : "java"),
+      jar: path.join(process.resourcesPath, "engine", "westream-engine.jar"),
+      config: path.join(process.resourcesPath, "engine", "servent_list.properties"),
+    }
+  : {
+      java: "java",
+      classpath: path.join(REPO_ROOT, "out", "production", "weStream"),
+      config: path.join(REPO_ROOT, "kademlia", "servent_list.properties"),
+    };
+const CONFIG = ENGINE.config;
 
 // Which node this window runs (override with WS_NODE_ID=1 to launch a second peer).
 const NODE_ID = parseInt(process.env.WS_NODE_ID || "0", 10);
@@ -51,16 +66,20 @@ let engine = null;
 /** Spawn the Java engine as a child process; pipe its logs through, keep stdin open. */
 function startEngine() {
   console.log(`[engine] starting node ${NODE_ID} (UDP ${udpPort}, API ${apiPort})`);
+  // Packaged: run the bundled jar with the jlinked JRE. Dev: run the javac classes
+  // with `java` on PATH. cwd holds the engine's scratch cache/ — in a packaged app
+  // it must be writable (Program Files is not), so use the per-user data dir.
+  const args = PACKAGED
+    ? ["-jar", ENGINE.jar, CONFIG, String(NODE_ID)]
+    : ["-cp", ENGINE.classpath, "app.ServentMain", CONFIG, String(NODE_ID)];
+  const cwd = PACKAGED ? app.getPath("userData") : REPO_ROOT;
   // stdin is a live pipe we never write to — ServentMain's CLI Scanner parks on it
   // (an EOF would crash that thread), while the engine runs on its own threads.
-  engine = spawn("java", ["-cp", CLASSPATH, "app.ServentMain", CONFIG, String(NODE_ID)], {
-    cwd: REPO_ROOT,
-    stdio: ["pipe", "pipe", "pipe"],
-  });
+  engine = spawn(ENGINE.java, args, { cwd, stdio: ["pipe", "pipe", "pipe"] });
   engine.stdout.on("data", (d) => process.stdout.write(`[engine ${NODE_ID}] ${d}`));
   engine.stderr.on("data", (d) => process.stderr.write(`[engine ${NODE_ID}] ${d}`));
   engine.on("error", (e) => console.error(`[engine] spawn failed: ${e.message} ` +
-    `(is 'java' on PATH and is ${CLASSPATH} compiled?)`));
+    `(java: ${ENGINE.java})`));
   engine.on("exit", (code, sig) => console.log(`[engine] exited (code=${code}, signal=${sig})`));
 }
 
